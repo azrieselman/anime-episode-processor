@@ -13,6 +13,7 @@ and metadata.
 
 Current release: **1.0.0-beta1**. See [`CHANGELOG.md`](CHANGELOG.md) for what's in the
 box and known limitations.
+The `main` branch now tracks post-release development toward **1.0.0-beta2**.
 
 ## Install (end users)
 

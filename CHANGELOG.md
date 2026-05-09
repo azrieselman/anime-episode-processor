@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-1.0 milestone tags (`1.0.0rc1`, `1.0.0rc2`) were internal — `1.0.0-beta1` is
 the first publicly distributed build.
 
+## [Unreleased]
+
+Development has started for `1.0.0-beta2`.
+
+### Changed
+- Bumped project version to `1.0.0b2.dev0` to mark post-`1.0.0-beta1` development.
+
 ## [1.0.0-beta1] — 2026-05-08
 
 First public beta. Source release on GitHub plus a Windows installer with
@@ -59,3 +66,4 @@ first-run tools fetcher.
 - Code-signed Windows installer.
 
 [1.0.0-beta1]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta1
+[Unreleased]: https://github.com/azrieselman/anime-episode-processor/compare/v1.0.0-beta1...HEAD
