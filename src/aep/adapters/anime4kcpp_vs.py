@@ -17,7 +17,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from aep.adapters.base import env_with_tool_dirs, ToolAdapter
+from aep.adapters.base import ToolAdapter, env_with_tool_dirs
 from aep.adapters.ffmpeg import FFmpegAdapter
 from aep.adapters.ncnn_base import NcnnRunResult
 from aep.util.paths import tools_dir
