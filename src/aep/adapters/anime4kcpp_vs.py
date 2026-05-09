@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import os
 import re
+import logging
 import subprocess
 import sys
 import tempfile
 import time
 import zipfile
-import logging
 from pathlib import Path
 
 from aep.adapters.base import ToolAdapter, env_with_tool_dirs
