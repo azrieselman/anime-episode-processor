@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Project
+tools/ffmpeg/*
+tools/mkvtoolnix/*
+tools/realcugan-ncnn-vulkan/*
+tools/realesrgan-ncnn-vulkan/*
+tools/rife-ncnn-vulkan/*
+tools/models/*
+!tools/**/.gitkeep
+
+# Runtime data (real installs use %LOCALAPPDATA%; this is for dev runs)
+runtime/
+*.log
+*.db
+*.db-journal

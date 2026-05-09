@@ -1,0 +1,489 @@
+"""Queue view: drop area + table of jobs.
+
+Subscribes to broker events, refreshes on Job updates and StageEvents. We deliberately
+use a `QTimer`-driven refresh rather than tying every cell to a signal — at the scale
+of "tens of jobs", a 250 ms refresh is invisible to the user and dramatically simpler.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from pathlib import Path
+from typing import Literal
+
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from aep.app.services import AppServices
+from aep.gui import theme
+from aep.gui.widgets.drop_area import DropArea
+from aep.jobs.models import Job, JobState
+from aep.pipeline.events import StageEvent
+
+log = logging.getLogger(__name__)
+
+
+COLUMNS = ["File", "Preset", "State", "Stage", "Batches", "Runtime", "Error"]
+
+_FILE_SORT_MODE = Literal["queue", "name_asc", "name_desc"]
+
+_DEFAULT_COLUMN_WIDTHS = [280, 140, 88, 140, 88, 88, 220]
+
+_STAGE_DISPLAY_NAMES: dict[str, str] = {
+    "00_probe": "Probing",
+    "01_plan": "Planning",
+    "02_sample_bench": "Benchmarking",
+    "03_scene_detect": "Scene Detection",
+    "04_decode_serve": "Decoding",
+    "05_upscale": "Upscaling",
+    "06_interpolate": "Interpolating",
+    "07_postprocess": "Post-Processing",
+    "08_encode": "Encoding",
+    "09_mux": "Muxing",
+    "10_validate": "Validating",
+}
+
+
+def _display_stage_name(stage_name: str | None) -> str:
+    if not stage_name:
+        return ""
+    if stage_name in _STAGE_DISPLAY_NAMES:
+        return _STAGE_DISPLAY_NAMES[stage_name]
+    normalized = re.sub(r"^\d+_", "", stage_name)
+    normalized = normalized.replace("_", " ").strip()
+    if not normalized:
+        return stage_name
+    return normalized.title()
+
+
+def _display_batch_progress(job: Job) -> str:
+    plan = job.plan if isinstance(job.plan, dict) else {}
+    raw = plan.get("batch_progress")
+    if not isinstance(raw, dict):
+        return "--"
+    done = raw.get("done")
+    total = raw.get("total")
+    if not isinstance(done, int) or not isinstance(total, int) or total <= 0:
+        return "--"
+    done = max(0, min(done, total))
+    return f"{done}/{total}"
+
+
+class QueueView(QWidget):
+    selection_changed = Signal(object)        # str | None (job id)
+    counts_changed = Signal(int, int, int, int)  # queued, running, completed, failed
+
+    def __init__(self, services: AppServices, parent=None) -> None:
+        super().__init__(parent)
+        self._services = services
+        self._file_sort_mode: _FILE_SORT_MODE = "queue"
+        self._build_ui()
+        self._wire_events()
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(250)
+        self._refresh_timer.timeout.connect(self._refresh)
+        self._refresh_timer.start()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        root.addWidget(theme.make_page_title_label("Queue", self))
+
+        self._drop = DropArea(self)
+        self._drop.paths_dropped.connect(self._on_paths_dropped)
+        root.addWidget(self._drop)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        self._add_files_btn = QPushButton("Add Files…")
+        self._add_files_btn.clicked.connect(self.prompt_add_files)
+        self._add_folder_btn = QPushButton("Add Folder…")
+        self._add_folder_btn.clicked.connect(self.prompt_add_folder)
+        toolbar.addWidget(self._add_files_btn)
+        toolbar.addWidget(self._add_folder_btn)
+
+        toolbar.addSpacing(16)
+        toolbar.addWidget(QLabel("Preset for new jobs:"))
+        self._preset_combo = QComboBox()
+        self._reload_presets()
+        toolbar.addWidget(self._preset_combo)
+
+        toolbar.addStretch(1)
+
+        # Queue-level Start/Pause toggle. Sits left of the per-job buttons
+        # because it gates ALL dispatch — the user's mental model is "first
+        # configure jobs, then click Start Queue."
+        self._queue_toggle_btn = QPushButton("Start Queue")
+        self._queue_toggle_btn.setStyleSheet("font-weight: 600;")
+        self._queue_toggle_btn.clicked.connect(self._on_queue_toggle_clicked)
+        toolbar.addWidget(self._queue_toggle_btn)
+        toolbar.addSpacing(12)
+
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self._on_cancel_clicked)
+        self._pause_btn = QPushButton("Pause")
+        self._pause_btn.clicked.connect(self._on_pause_clicked)
+        self._resume_btn = QPushButton("Resume")
+        self._resume_btn.clicked.connect(self._on_resume_clicked)
+        self._remove_btn = QPushButton("Remove")
+        self._remove_btn.clicked.connect(self._on_remove_clicked)
+        self._clear_queue_btn = QPushButton("Clear Queue…")
+        self._clear_queue_btn.clicked.connect(self._on_clear_queue_clicked)
+        self._retry_btn = QPushButton("Retry Failed")
+        self._retry_btn.clicked.connect(self._on_retry_clicked)
+        for b in (
+            self._cancel_btn,
+            self._pause_btn,
+            self._resume_btn,
+            self._retry_btn,
+            self._remove_btn,
+            self._clear_queue_btn,
+        ):
+            toolbar.addWidget(b)
+
+        root.addLayout(toolbar)
+
+        # Status line under the toolbar shows whether dispatch is paused.
+        # We keep it minimal to avoid stealing vertical space from the table.
+        self._queue_status_label = QLabel("")
+        theme.style_attention_status_label(self._queue_status_label, italic=True)
+        root.addWidget(self._queue_status_label)
+        self._refresh_queue_toggle()
+
+        self._table = QTableWidget(0, len(COLUMNS), self)
+        self._table.setHorizontalHeaderLabels(COLUMNS)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._table.setSortingEnabled(False)
+        h = self._table.horizontalHeader()
+        h.setStretchLastSection(False)
+        for col in range(len(COLUMNS)):
+            h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        for col, w in enumerate(_DEFAULT_COLUMN_WIDTHS):
+            h.resizeSection(col, w)
+        h.sectionClicked.connect(self._on_queue_header_section_clicked)
+        self._update_file_sort_indicator()
+        self._table.itemSelectionChanged.connect(self._on_selection_changed)
+        root.addWidget(self._table, 1)
+
+    def _wire_events(self) -> None:
+        self._services.jobs.subscribe(self._on_broker_event)
+
+    def reload_presets(self) -> None:
+        """Refresh preset combo from disk (e.g. after Preset Designer save)."""
+        self._reload_presets()
+
+    def _reload_presets(self) -> None:
+        self._preset_combo.clear()
+        for p in self._services.presets.list():
+            self._preset_combo.addItem(f"{p.meta.name}", p.meta.id)
+        # Default selection to settings.last_used_preset if found.
+        try:
+            last = self._services.settings.get().last_used_preset
+            idx = self._preset_combo.findData(last)
+            if idx >= 0:
+                self._preset_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+    # ----- input ---------------------------------------------------
+
+    def prompt_add_files(self) -> None:
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Add video files", "",
+            "Video files (*.mkv *.mp4 *.m4v *.webm *.avi *.mov *.ts *.m2ts);;All files (*.*)",
+        )
+        if files:
+            self._enqueue_paths([Path(f) for f in files])
+
+    def prompt_add_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Add folder")
+        if folder:
+            from aep.gui.widgets.drop_area import _expand_paths
+            paths = _expand_paths([Path(folder)])
+            self._enqueue_paths(paths)
+
+    def _on_paths_dropped(self, paths: list[Path]) -> None:
+        self._enqueue_paths(paths)
+
+    def _enqueue_paths(self, paths: list[Path]) -> None:
+        preset_id = self._preset_combo.currentData() or "anime_balanced"
+        try:
+            confirm_overwrite = bool(self._services.settings.get().general.confirm_overwrite)
+        except Exception:
+            confirm_overwrite = True
+        apply_to_all: str | None = None
+        for p in paths:
+            decision = apply_to_all
+            if confirm_overwrite and decision is None:
+                try:
+                    out_path = self._services.jobs.preview_output_path(p, preset_id)
+                except Exception:
+                    out_path = None
+                if out_path is not None and out_path.exists():
+                    decision = self._prompt_overwrite(p, out_path, multi=len(paths) > 1)
+                    if decision in ("yes_all", "no_all"):
+                        apply_to_all = decision
+                    if decision in ("no", "no_all", "cancel"):
+                        if decision == "cancel":
+                            break
+                        continue
+            try:
+                self._services.jobs.enqueue(p, preset_id)
+            except Exception as exc:
+                log.exception("failed to enqueue %s: %s", p, exc)
+        # Persist last-used preset
+        try:
+            s = self._services.settings.get()
+            s.last_used_preset = preset_id
+            self._services.settings.update(s)
+        except Exception:
+            pass
+
+    def _prompt_overwrite(self, source: Path, out_path: Path, *, multi: bool) -> str:
+        """Ask the user whether to overwrite an existing output file.
+
+        Returns one of: ``"yes"``, ``"no"``, ``"yes_all"``, ``"no_all"``,
+        ``"cancel"``. ``yes_all``/``no_all`` are only offered when more than one
+        file is being added in this batch.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Output already exists")
+        box.setText(
+            f"The output for <b>{source.name}</b> already exists:<br><br>"
+            f"<code>{out_path}</code><br><br>"
+            "Overwrite when this job runs?"
+        )
+        yes_btn = box.addButton("Overwrite", QMessageBox.ButtonRole.AcceptRole)
+        no_btn = box.addButton("Skip", QMessageBox.ButtonRole.RejectRole)
+        yes_all_btn = None
+        no_all_btn = None
+        if multi:
+            yes_all_btn = box.addButton(
+                "Overwrite All", QMessageBox.ButtonRole.AcceptRole,
+            )
+            no_all_btn = box.addButton(
+                "Skip All", QMessageBox.ButtonRole.RejectRole,
+            )
+        cancel_btn = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(no_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is yes_btn:
+            return "yes"
+        if clicked is yes_all_btn:
+            return "yes_all"
+        if clicked is no_all_btn:
+            return "no_all"
+        if clicked is cancel_btn:
+            return "cancel"
+        return "no"
+
+    # ----- broker -------------------------------------------------
+
+    def _on_broker_event(self, payload) -> None:  # type: ignore[no-untyped-def]
+        # Called from broker thread. Don't touch widgets here; the QTimer refresh handles it.
+        if isinstance(payload, StageEvent):
+            log.debug("event %s/%s: %s", payload.job_id, payload.stage, payload.kind)
+
+    # ----- table refresh ------------------------------------------
+
+    def _refresh(self) -> None:
+        # Keep the queue-toggle UI in sync in case the broker state changes
+        # from elsewhere (e.g. settings.auto_start_jobs at startup).
+        self._refresh_queue_toggle()
+        jobs = list(self._services.jobs.list_jobs())
+        jobs = self._ordered_jobs(jobs)
+        # Track currently selected job id to preserve selection across rebuilds.
+        sel_id = self._current_selected_job_id()
+
+        self._table.setRowCount(len(jobs))
+        counts = {state: 0 for state in JobState}
+        for row, job in enumerate(jobs):
+            counts[job.state] = counts.get(job.state, 0) + 1
+            self._fill_row(row, job)
+
+        # Restore selection.
+        if sel_id is not None:
+            for row in range(self._table.rowCount()):
+                if self._table.item(row, 0).data(Qt.ItemDataRole.UserRole) == sel_id:
+                    self._table.selectRow(row)
+                    break
+
+        self.counts_changed.emit(
+            counts.get(JobState.QUEUED, 0),
+            counts.get(JobState.RUNNING, 0),
+            counts.get(JobState.COMPLETED, 0),
+            counts.get(JobState.FAILED, 0),
+        )
+        self._clear_queue_btn.setEnabled(len(jobs) > 0)
+
+    def _ordered_jobs(self, jobs: list[Job]) -> list[Job]:
+        if self._file_sort_mode == "queue":
+            return jobs
+        key = lambda j: (Path(j.source_path).name.lower(), j.id)
+        if self._file_sort_mode == "name_asc":
+            return sorted(jobs, key=key)
+        return sorted(jobs, key=key, reverse=True)
+
+    def _update_file_sort_indicator(self) -> None:
+        h = self._table.horizontalHeader()
+        if self._file_sort_mode == "queue":
+            h.setSortIndicatorShown(False)
+        elif self._file_sort_mode == "name_asc":
+            h.setSortIndicatorShown(True)
+            h.setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        else:
+            h.setSortIndicatorShown(True)
+            h.setSortIndicator(0, Qt.SortOrder.DescendingOrder)
+
+    def _on_queue_header_section_clicked(self, logical_index: int) -> None:
+        if logical_index != 0:
+            return
+        if self._file_sort_mode == "queue":
+            self._file_sort_mode = "name_asc"
+        elif self._file_sort_mode == "name_asc":
+            self._file_sort_mode = "name_desc"
+        else:
+            self._file_sort_mode = "queue"
+        self._update_file_sort_indicator()
+        self._refresh()
+
+    def _fill_row(self, row: int, job: Job) -> None:
+        file_item = QTableWidgetItem(Path(job.source_path).name)
+        file_item.setToolTip(job.source_path)
+        file_item.setData(Qt.ItemDataRole.UserRole, job.id)
+
+        preset_item = QTableWidgetItem(job.preset_id)
+        state_item = QTableWidgetItem(job.state.value)
+        stage_item = QTableWidgetItem(_display_stage_name(job.current_stage))
+        progress_item = QTableWidgetItem(_display_batch_progress(job))
+        runtime_s = self._services.jobs.get_job_active_elapsed_s(job.id)
+        runtime_item = QTableWidgetItem(self._format_elapsed(runtime_s))
+        error_item = QTableWidgetItem(job.error or "")
+
+        self._table.setItem(row, 0, file_item)
+        self._table.setItem(row, 1, preset_item)
+        self._table.setItem(row, 2, state_item)
+        self._table.setItem(row, 3, stage_item)
+        self._table.setItem(row, 4, progress_item)
+        self._table.setItem(row, 5, runtime_item)
+        self._table.setItem(row, 6, error_item)
+
+    # ----- selection / actions ------------------------------------
+
+    def _current_selected_job_id(self) -> str | None:
+        items = self._table.selectedItems()
+        if not items:
+            return None
+        return self._table.item(items[0].row(), 0).data(Qt.ItemDataRole.UserRole)
+
+    def _on_selection_changed(self) -> None:
+        self.selection_changed.emit(self._current_selected_job_id())
+
+    def _on_cancel_clicked(self) -> None:
+        jid = self._current_selected_job_id()
+        if jid:
+            self._services.jobs.cancel(jid)
+
+    def _on_pause_clicked(self) -> None:
+        jid = self._current_selected_job_id()
+        if jid:
+            self._services.jobs.pause(jid)
+
+    def _on_resume_clicked(self) -> None:
+        jid = self._current_selected_job_id()
+        if jid:
+            self._services.jobs.resume(jid)
+
+    def _on_remove_clicked(self) -> None:
+        jid = self._current_selected_job_id()
+        if jid:
+            self._services.jobs.remove(jid)
+
+    def _on_clear_queue_clicked(self) -> None:
+        jobs = self._services.jobs.list_jobs()
+        if not jobs:
+            return
+        ret = QMessageBox.question(
+            self,
+            "Clear queue?",
+            "Remove all jobs and delete their work folders (and ramdisk artifacts)? "
+            "Running jobs will be cancelled.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._services.jobs.clear_queue()
+        except Exception as exc:
+            log.exception("clear_queue failed: %s", exc)
+            QMessageBox.warning(self, "Clear queue failed", str(exc))
+
+    def _on_retry_clicked(self) -> None:
+        jid = self._current_selected_job_id()
+        if jid:
+            self._services.jobs.retry_failed(jid)
+
+    # ----- queue-level start/pause --------------------------------------
+
+    def _on_queue_toggle_clicked(self) -> None:
+        """Toggle the queue-level pause flag.
+
+        Dispatch state lives in the broker; we just call across and then
+        re-render the button label. The QTimer refresh would also catch the
+        change but doing it inline gives instant feedback.
+        """
+        if self._services.jobs.is_queue_paused():
+            self._services.jobs.start_queue()
+        else:
+            self._services.jobs.pause_queue()
+        self._refresh_queue_toggle()
+
+    def _refresh_queue_toggle(self) -> None:
+        """Sync the toggle button label + status text to broker state."""
+        try:
+            paused = self._services.jobs.is_queue_paused()
+            queue_elapsed_s = self._services.jobs.get_queue_active_elapsed_s()
+        except Exception:
+            paused = True
+            queue_elapsed_s = 0.0
+        queue_elapsed = self._format_elapsed(queue_elapsed_s)
+        if paused:
+            self._queue_toggle_btn.setText("Start Queue")
+            self._queue_status_label.setText(
+                f"Queue paused — active runtime {queue_elapsed}. Click Start Queue to continue.",
+            )
+        else:
+            self._queue_toggle_btn.setText("Pause Queue")
+            self._queue_status_label.setText(f"Queue running — active runtime {queue_elapsed}.")
+
+    @staticmethod
+    def _format_elapsed(seconds: float | None) -> str:
+        if seconds is None:
+            return "--"
+        total_seconds = max(0, int(seconds))
+        hours, rem = divmod(total_seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        return f"{hours:02}:{minutes:02}:{secs:02}"

@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: lint, type-check, test (windows-latest, py${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dev dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff (lint)
+        shell: pwsh
+        run: ruff check src tests
+
+      - name: Mypy (type check — informational; --strict is post-beta cleanup)
+        shell: pwsh
+        continue-on-error: true
+        run: mypy
+
+      - name: Pytest (unit)
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest tests/unit -q --tb=short
+
+      # Pipeline smoke test needs ffmpeg/ffprobe on PATH. Install via chocolatey
+      # so the runner picks it up the same way an end user would after an
+      # AEP first-run fetch. The integration test self-skips if installation
+      # fails, so a transient mirror outage shouldn't redden the matrix.
+      - name: Install FFmpeg (for integration smoke test)
+        shell: pwsh
+        continue-on-error: true
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Pytest (integration smoke)
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest tests/integration -q --tb=short

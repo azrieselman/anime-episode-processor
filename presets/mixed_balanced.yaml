@@ -1,0 +1,59 @@
+meta:
+  id: mixed_balanced
+  name: Mixed Content Balanced
+  description: >
+    For anime with significant CG/photographic content (mecha, food shots, photographic
+    backgrounds). Uses Real-ESRGAN animevideov3 (more tolerant of textures than CUGAN)
+    and HEVC NVENC.
+  builtin: true
+  suitable_for: [mixed]
+  target_hardware: "RTX 3000 series, 8GB+ VRAM"
+container: mkv
+target_resolution:
+  mode: named
+  named: "1440p"
+upscaler:
+  engine: realesrgan-ncnn-vulkan
+  model: realesr-animevideov3
+  scale: 2
+  denoise: -1
+  tile_size: 256
+  fp16: true
+  enabled: true
+interpolation:
+  enabled: true
+  engine: rife-ncnn-vulkan
+  version: v4.6
+  target_fps: 60
+  scene_cut_threshold: 0.4
+  duplicate_on_scene_cut: true
+  fp16: true
+encoder:
+  name: hevc_nvenc
+  nvenc_preset: p6
+  nvenc_tune: hq
+  nvenc_rc: vbr
+  nvenc_cq: 21
+  nvenc_multipass: fullres
+  nvenc_spatial_aq: true
+  nvenc_temporal_aq: true
+  nvenc_bframes: 3
+  nvenc_b_ref_mode: middle
+  x_crf: 19
+  x_preset: slow
+  x_tune: null
+  extra_args: []
+streams:
+  copy_audio: true
+  copy_subtitles: true
+  copy_chapters: true
+  copy_attachments: true
+  copy_global_metadata: true
+  copy_stream_metadata: true
+  copy_dispositions: true
+  burn_in_subtitles: false
+postprocess:
+  enabled: false
+  deband: false
+  deblock: false
+  grain_addback: 0

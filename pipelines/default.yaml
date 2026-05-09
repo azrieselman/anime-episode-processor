@@ -1,0 +1,36 @@
+# Canonical default pipeline definition.
+# Stage selection / reordering will become user-editable in M2; for M1 the runner uses
+# build_default_stages() in code, but this file documents the stage contract so it's
+# discoverable.
+
+pipeline:
+  id: default
+  description: Probe → plan → bench (opt) → scene-detect → decode → (interpolate ↔ upscale per settings.pipeline.order) → postprocess (opt) → encode → mux → validate
+  stages:
+    - name: 00_probe
+      required: true
+    - name: 01_plan
+      required: true
+    # 02_sample_bench is a reserved placeholder slot for a future smart-auto
+    # benchmarking stage (post-1.0.0-beta1). The runner ships a no-op
+    # PlaceholderStage at this position so cache keys remain stable when the
+    # real autotuner lands. No shipped preset enables it today.
+    - name: 02_sample_bench
+      required: false
+      skip_unless: ["settings.bench_first_run"]
+    - name: 03_scene_detect
+      required_if: "preset.interpolation.enabled"
+    - name: 04_decode_serve
+      required: true
+    - name: 05_upscale
+      required_if: "preset.upscaler.enabled"
+    - name: 06_interpolate
+      required_if: "preset.interpolation.enabled"
+    - name: 07_postprocess
+      required_if: "preset.postprocess.enabled"
+    - name: 08_encode
+      required: true
+    - name: 09_mux
+      required: true
+    - name: 10_validate
+      required: true
