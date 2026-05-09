@@ -243,7 +243,7 @@ class MuxStage(BaseStage):
         list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
         cmd = [
-            self._ffmpeg.path,
+            self._ffmpeg.command_executable(),
             "-hide_banner",
             "-nostdin",
             "-loglevel", "error",

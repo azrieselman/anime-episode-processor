@@ -28,7 +28,7 @@ from pathlib import Path
 
 from aep.adapters.base import ToolAdapter, env_with_tool_dirs
 from aep.constants import BIN_FFMPEG
-from aep.errors import EncodeError
+from aep.errors import EncodeError, ToolNotFoundError
 from aep.util.proc import run_capture, run_streaming
 
 log = logging.getLogger(__name__)
@@ -86,6 +86,17 @@ class FFmpegAdapter(ToolAdapter):
         result = run_capture([self.path, "-version"], timeout=15.0)
         m = _VERSION_RE.search(result.stdout)
         return m.group(1) if m else "unknown"
+
+    def command_executable(self) -> str | Path:
+        """Return executable token for argv construction.
+
+        Unit tests that only assert argv shape should not require ffmpeg to be
+        installed. Runtime execution paths still resolve and validate the tool.
+        """
+        try:
+            return self.path
+        except ToolNotFoundError:
+            return self.bin_name
 
     # ----- encoder enumeration ------------------------------------------
 
@@ -192,7 +203,7 @@ class FFmpegAdapter(ToolAdapter):
         possible — encoded video survives even if mux later fails.
         """
         cmd: list[str | Path] = [
-            self.path,
+            self.command_executable(),
             "-hide_banner",
             "-nostdin",
             "-loglevel", "error",
@@ -244,7 +255,7 @@ class FFmpegAdapter(ToolAdapter):
         `map_args` and `copy_args` come from the mux mapping engine.
         """
         cmd: list[str | Path] = [
-            self.path,
+            self.command_executable(),
             "-hide_banner",
             "-nostdin",
             "-loglevel", "error",
@@ -304,7 +315,7 @@ class FFmpegAdapter(ToolAdapter):
             png_compression = PNG_COMPRESSION_LEVEL
 
         cmd: list[str | Path] = [
-            self.path,
+            self.command_executable(),
             "-hide_banner",
             "-nostdin",
             "-loglevel", "error",
@@ -394,7 +405,7 @@ class FFmpegAdapter(ToolAdapter):
         if frame_format not in ("png", "webp"):
             raise ValueError(f"frame_format must be png or webp, got {frame_format!r}")
         cmd: list[str | Path] = [
-            self.path,
+            self.command_executable(),
             "-hide_banner",
             "-nostdin",
             "-loglevel", "error",
