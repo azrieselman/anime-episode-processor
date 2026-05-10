@@ -80,7 +80,7 @@ class PathSettings(BaseModel):
     vapoursynth_dir: str | None = None
     rife_dir: str | None = None
     waifu2x_dir: str | None = None
-    # If set and free space ≥ estimate × 1.5, stages 04-07 (frame I/O heavy)
+    # If set and free space ≥ planner frame estimate, stages 04-07 (frame I/O heavy)
     # write their working frames here instead of the regular work dir. Intended
     # for ImDisk/ramdisk on Windows; an SSD scratch dir works equally well.
     # When unset or unavailable, the pipeline silently falls back to work_dir.

@@ -8,11 +8,7 @@ required input is missing. Routing treats 0 as "trust the user".
 from __future__ import annotations
 
 from aep.media.models import FormatInfo, MediaInfo, StreamInfo
-from aep.pipeline.stages.s01_plan import (
-    _BYTES_PER_PIXEL,
-    _PEAK_CONCURRENT_STAGE_BUFFERS,
-    _estimate_frame_bytes,
-)
+from aep.pipeline.stages.s01_plan import _BYTES_PER_PIXEL, _estimate_frame_bytes
 
 
 def _media(
@@ -61,13 +57,7 @@ def test_uses_nb_frames_when_present() -> None:
     got = _estimate_frame_bytes(
         media=media, target_w=1920, target_h=1080, m3_plan=_FLAT_PLAN,
     )
-    expected = int(
-        1440
-        * 1920
-        * 1080
-        * _BYTES_PER_PIXEL
-        * _PEAK_CONCURRENT_STAGE_BUFFERS
-    )
+    expected = int(1440 * 1920 * 1080 * _BYTES_PER_PIXEL)
     assert got == expected
 
 
@@ -78,13 +68,7 @@ def test_falls_back_to_duration_times_fps() -> None:
         media=media, target_w=1920, target_h=1080, m3_plan=_FLAT_PLAN,
     )
     expected_frames = int((24000 / 1001) * 60.0)  # 1438
-    expected = int(
-        expected_frames
-        * 1920
-        * 1080
-        * _BYTES_PER_PIXEL
-        * _PEAK_CONCURRENT_STAGE_BUFFERS
-    )
+    expected = int(expected_frames * 1920 * 1080 * _BYTES_PER_PIXEL)
     assert got == expected
     assert got > 0
 
@@ -130,13 +114,7 @@ def test_upscale_scale_multiplies_geometry_when_target_unpinned() -> None:
     got = _estimate_frame_bytes(
         media=media, target_w=None, target_h=None, m3_plan=plan,
     )
-    expected = int(
-        100
-        * (960 * 2)
-        * (540 * 2)
-        * _BYTES_PER_PIXEL
-        * _PEAK_CONCURRENT_STAGE_BUFFERS
-    )
+    expected = int(100 * (960 * 2) * (540 * 2) * _BYTES_PER_PIXEL)
     assert got == expected
 
 
@@ -152,13 +130,7 @@ def test_upscale_scale_ignored_when_target_geometry_pinned() -> None:
     got = _estimate_frame_bytes(
         media=media, target_w=1920, target_h=1080, m3_plan=plan,
     )
-    expected = int(
-        100
-        * 1920
-        * 1080
-        * _BYTES_PER_PIXEL
-        * _PEAK_CONCURRENT_STAGE_BUFFERS
-    )
+    expected = int(100 * 1920 * 1080 * _BYTES_PER_PIXEL)
     assert got == expected
 
 
@@ -171,13 +143,7 @@ def test_interpolation_multiplier_doubles_frame_count() -> None:
     got = _estimate_frame_bytes(
         media=media, target_w=1920, target_h=1080, m3_plan=plan,
     )
-    expected = int(
-        (100 * 2)
-        * 1920
-        * 1080
-        * _BYTES_PER_PIXEL
-        * _PEAK_CONCURRENT_STAGE_BUFFERS
-    )
+    expected = int((100 * 2) * 1920 * 1080 * _BYTES_PER_PIXEL)
     assert got == expected
 
 

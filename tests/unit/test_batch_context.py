@@ -68,10 +68,32 @@ def test_assert_ramdisk_room_passes_when_free_space_sufficient(tmp_path: Path) -
         index=0, start_pts=0.0, end_pts=30.0,
         frame_count_estimate=1800, est_bytes=100 * 1024 * 1024,  # 100 MiB
     )
-    # 200 MiB free > 130 MiB required (100 MiB × 1.3).
+    # 200 MiB free > 100 MiB required.
     with patch(
         "aep.pipeline.context.shutil.disk_usage",
         return_value=_FakeUsage(total=1 << 30, used=0, free=200 * 1024 * 1024),
+    ):
+        ctx.assert_ramdisk_has_room_for(batch)
+
+
+def test_assert_ramdisk_room_passes_when_low_reported_free_but_batch_folder_covers(
+    tmp_path: Path,
+) -> None:
+    """Resume mid-batch: intermediates sit on the RAM-disk and reduce *reported* free."""
+    ramdisk = tmp_path / "ram"
+    ramdisk.mkdir()
+    ctx = _ctx(tmp_path / "work", ramdisk)
+    batch = BatchSpec(
+        index=1, start_pts=30.0, end_pts=60.0,
+        frame_count_estimate=1800, est_bytes=100 * 1024 * 1024,
+    )
+    # Required 100 MiB. Reported free only 100 MiB — would fail without reuse logic.
+    reuse = ramdisk / "abc123" / "batch_01" / "07_postprocess"
+    reuse.mkdir(parents=True)
+    (reuse / "frame.bin").write_bytes(b"x" * (35 * 1024 * 1024))
+    with patch(
+        "aep.pipeline.context.shutil.disk_usage",
+        return_value=_FakeUsage(total=1 << 30, used=0, free=100 * 1024 * 1024),
     ):
         ctx.assert_ramdisk_has_room_for(batch)
 
@@ -84,10 +106,10 @@ def test_assert_ramdisk_room_raises_on_insufficient_free_space(tmp_path: Path) -
         index=2, start_pts=60.0, end_pts=90.0,
         frame_count_estimate=1800, est_bytes=100 * 1024 * 1024,
     )
-    # Only 100 MiB free < 130 MiB required.
+    # Only 99 MiB free < 100 MiB required.
     with patch(
         "aep.pipeline.context.shutil.disk_usage",
-        return_value=_FakeUsage(total=1 << 30, used=0, free=100 * 1024 * 1024),
+        return_value=_FakeUsage(total=1 << 30, used=0, free=99 * 1024 * 1024),
     ), pytest.raises(PipelineError) as excinfo:
         ctx.assert_ramdisk_has_room_for(batch)
     msg = str(excinfo.value)
@@ -96,7 +118,8 @@ def test_assert_ramdisk_room_raises_on_insufficient_free_space(tmp_path: Path) -
     assert "MiB" in msg
     # Context is preserved so callers / log scrapers can introspect.
     assert excinfo.value.context["batch_idx"] == 2
-    assert excinfo.value.context["free_bytes"] == 100 * 1024 * 1024
+    assert excinfo.value.context["free_bytes"] == 99 * 1024 * 1024
+    assert excinfo.value.context["existing_batch_bytes"] == 0
 
 
 def test_assert_ramdisk_room_hard_fails_when_no_ramdisk(tmp_path: Path) -> None:

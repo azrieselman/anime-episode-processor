@@ -7,7 +7,7 @@ backend can drop in later without GUI changes.
 
 Public surface:
 * enqueue(source_path, preset_id, output_path=None) -> Job
-* cancel(job_id)
+* cancel(job_id) — stop if running; reset job to a blank QUEUED row (cleanup artifacts)
 * pause(job_id) / resume(job_id)
 * subscribe(callback) — receives StageEvents AND job state changes
 * start() / stop()
@@ -61,6 +61,27 @@ def _parse_timestamp_s(ts: str | None) -> float | None:
         return datetime.fromisoformat(ts).timestamp()
     except ValueError:
         return None
+
+
+def _reset_job_to_blank_queued(job: Job, *, bump_created_at: bool = False) -> None:
+    """Clear runtime fields so the row matches a freshly enqueued job.
+
+    ``bump_created_at`` sends the job to the back of the FIFO queue — used when
+    cancelling an in-flight job so other queued work dispatches first.
+    """
+    job.state = JobState.QUEUED
+    job.error = None
+    job.finished_at = None
+    job.started_at = None
+    job.current_stage = None
+    job.last_failed_stage = None
+    job.resume_from_stage = None
+    job.progress = 0.0
+    job.plan = {}
+    job.probe = None
+    job.retry_count = 0
+    if bump_created_at:
+        job.created_at = _now()
 
 
 # Hard upper bound on concurrent jobs regardless of what settings say.
@@ -184,19 +205,21 @@ class JobBroker:
             ctx = self._active.get(job_id)
         if ctx:
             ctx.cancel_event.set()
-        # Update DB optimistically; the worker loop will mark it cancelled if currently
-        # running, otherwise we persist the state directly.
         job = get_job(job_id)
-        if job and not job.is_terminal():
-            if job.state == JobState.QUEUED:
-                job.state = JobState.CANCELLED
-                job.finished_at = _now()
-                update_job(job)
-                self._publish(job)
-                settings = load_settings()
-                ramdisk_path = Path(settings.paths.ramdisk_path) if settings.paths.ramdisk_path else None
-                cleanup_job_artifacts(job_id, ramdisk_path=ramdisk_path)
-                self._maybe_auto_pause_queue_if_idle()
+        if job is None or job.is_terminal():
+            return
+        if job.state == JobState.RUNNING:
+            return
+        settings = load_settings()
+        ramdisk_path = Path(settings.paths.ramdisk_path) if settings.paths.ramdisk_path else None
+        cleanup_job_artifacts(job_id, ramdisk_path=ramdisk_path)
+        _reset_job_to_blank_queued(
+            job,
+            bump_created_at=(job.state == JobState.PAUSED),
+        )
+        update_job(job)
+        self._publish(job)
+        self._wake.set()
 
     def retry_failed(self, job_id: str) -> Job | None:
         job = get_job(job_id)
@@ -217,37 +240,40 @@ class JobBroker:
         return job
 
     def pause(self, job_id: str) -> None:
+        """Request a cooperative pause for an in-flight job.
+
+        Sets ``ctx.pause_event`` so stages exit at safe checkpoints and the
+        worker transitions the DB row to ``PAUSED``. The row stays ``RUNNING``
+        until that happens — callers that need user-visible confirmation should
+        wait until ``get_job(..).state != RUNNING``.
+        """
         with self._active_lock:
             ctx = self._active.get(job_id)
         if ctx:
             ctx.pause_event.set()
-            job = get_job(job_id)
-            if job:
-                job.state = JobState.PAUSED
-                update_job(job)
-                self._publish(job)
 
     # ----- queue-level pause/start --------------------------------------
 
     def start_queue(self) -> None:
         """Release the queue-level pause so the dispatcher can claim jobs.
 
-        Idempotent. Wakes the dispatcher in case it was sleeping on _wake.
+        Idempotent with respect to ``_queue_paused``: repeated calls are safe.
+        Always pings ``_wake`` so the dispatcher retries claim even if dispatch
+        was already unpaused (e.g. queued work appeared without a wake edge).
         Does NOT affect per-job pause state (that's pause()/resume()).
         """
-        if not self._queue_paused:
-            return
-        self._queue_paused = False
-        with self._queue_timing_lock:
-            now_s = time.time()
-            if self._queue_pause_started_at_s is not None:
-                self._queue_paused_accum_s += max(0.0, now_s - self._queue_pause_started_at_s)
-                self._queue_pause_started_at_s = None
-            if self._queue_pause_windows and self._queue_pause_windows[-1][1] is None:
-                start_s, _ = self._queue_pause_windows[-1]
-                self._queue_pause_windows[-1] = (start_s, now_s)
-        log.info("queue started (dispatch unpaused)")
-        self._publish(QueueStateEvent(paused=False))
+        if self._queue_paused:
+            self._queue_paused = False
+            with self._queue_timing_lock:
+                now_s = time.time()
+                if self._queue_pause_started_at_s is not None:
+                    self._queue_paused_accum_s += max(0.0, now_s - self._queue_pause_started_at_s)
+                    self._queue_pause_started_at_s = None
+                if self._queue_pause_windows and self._queue_pause_windows[-1][1] is None:
+                    start_s, _ = self._queue_pause_windows[-1]
+                    self._queue_pause_windows[-1] = (start_s, now_s)
+            log.info("queue started (dispatch unpaused)")
+            self._publish(QueueStateEvent(paused=False))
         self._wake.set()
 
     def set_queued_dispatch_order(self, order: QueuedDispatchOrder) -> None:
@@ -565,12 +591,11 @@ class JobBroker:
             update_job(job)
             self._publish(job)
         except CancelledError:
-            job.state = JobState.CANCELLED
-            job.finished_at = _now()
-            job.resume_from_stage = None
-            job.current_stage = None
+            cleanup_job_artifacts(job.id, ramdisk_path=ramdisk_path)
+            _reset_job_to_blank_queued(job, bump_created_at=True)
             update_job(job)
             self._publish(job)
+            self._wake.set()
         except AEPError as exc:
             job.state = JobState.FAILED
             job.error = f"{type(exc).__name__}: {exc}"
@@ -593,7 +618,6 @@ class JobBroker:
             if job.state in (
                 JobState.COMPLETED,
                 JobState.FAILED,
-                JobState.CANCELLED,
                 JobState.PAUSED,
             ):
                 self._maybe_auto_pause_queue_if_idle()
@@ -602,8 +626,6 @@ class JobBroker:
             # Always detach the per-job log handler, even on crash, so the
             # next job on this thread doesn't accidentally inherit it.
             detach_job_log_handler(job_log_handler)
-            if job.state == JobState.CANCELLED:
-                cleanup_job_artifacts(job.id, ramdisk_path=ramdisk_path)
 
     def _on_stage_event(self, job: Job, ev: StageEvent) -> None:
         # Coalesce all of the per-event mutations into a single ``update_job``

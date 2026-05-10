@@ -3,7 +3,8 @@
 State machine:
    queued → running → (paused ⇄ running) → completed
                                           → failed
-                                          → cancelled
+   cancel clears back to queued (from queued / paused / running)
+   cancelled — legacy terminal rows only
 
 States are persisted to sqlite; `progress` is a 0..1 float updated by stage events.
 """

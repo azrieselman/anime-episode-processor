@@ -47,12 +47,14 @@ def update_job(job: Job) -> None:
         conn.execute(
             "UPDATE jobs SET source_path=?, output_path=?, preset_id=?, state=?, progress=?, "
             "error=?, current_stage=?, last_failed_stage=?, resume_from_stage=?, retry_count=?, "
-            "updated_at=?, started_at=?, finished_at=?, plan_json=?, probe_json=?, preset_overrides_json=? "
+            "created_at=?, updated_at=?, started_at=?, finished_at=?, plan_json=?, probe_json=?, "
+            "preset_overrides_json=? "
             "WHERE id=?",
             (
                 job.source_path, job.output_path, job.preset_id, job.state.value,
                 job.progress, job.error, job.current_stage, job.last_failed_stage,
-                job.resume_from_stage, job.retry_count, job.updated_at, job.started_at, job.finished_at,
+                job.resume_from_stage, job.retry_count, job.created_at, job.updated_at,
+                job.started_at, job.finished_at,
                 json.dumps(job.plan), json.dumps(job.probe) if job.probe else None,
                 json.dumps(job.preset_overrides) if job.preset_overrides else None,
                 job.id,

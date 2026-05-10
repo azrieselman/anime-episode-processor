@@ -50,16 +50,6 @@ _BATCHED_STAGES: frozenset[str] = frozenset({
     "08_encode",
 })
 
-# Free-space safety multiplier. We require ramdisk free space ≥ estimate × this
-# before routing onto it, so a near-full ramdisk doesn't ENOSPC mid-stage.
-_RAMDISK_FREE_SAFETY: float = 1.5
-
-# Per-batch RAM-disk safety multiplier (M6.5). Batched pipelines use a tighter
-# headroom because each chunk's footprint is bounded — 30 % accounts for
-# filesystem overhead and transient duplicates during cleanup.
-_RAMDISK_BATCH_SAFETY: float = 1.3
-
-
 @dataclass
 class PipelineContext:
     job_id: str
@@ -75,8 +65,8 @@ class PipelineContext:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     pause_event: threading.Event = field(default_factory=threading.Event)
     extras: dict[str, Any] = field(default_factory=dict)
-    # Optional ramdisk root. When set and free space ≥ estimate × 1.5, frame-heavy
-    # stages (04-07) route their working frames here. Stage layout under the
+    # Optional ramdisk root. When set and free space ≥ planner frame estimate,
+    # frame-heavy stages (04-07) route their working frames here. Stage layout under the
     # ramdisk mirrors the workdir layout: <ramdisk>/<job_id>/<stage_name>/.
     ramdisk_path: Path | None = None
     # Estimated total bytes of frame data the pipeline will produce; used as the
@@ -159,14 +149,49 @@ class PipelineContext:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def _batch_dir_usage_bytes(self, batch_idx: int) -> int:
+        """Sum file sizes under ``<ramdisk>/<job_id>/batch_<NN>/`` (0 if missing).
+
+        Used by the RAM-disk gate when resuming a paused batch: space occupied by
+        this job's in-progress intermediates still counts toward the batch budget
+        — it must not be treated as missing from ``disk_usage().free``.
+        """
+        if self.ramdisk_path is None:
+            return 0
+        root = self.ramdisk_path / self.job_id / f"batch_{batch_idx:02d}"
+        if not root.is_dir():
+            return 0
+        total = 0
+        try:
+            for p in root.rglob("*"):
+                try:
+                    if p.is_file():
+                        total += p.stat().st_size
+                except OSError:
+                    continue
+        except OSError as exc:
+            log.warning(
+                "batch %02d: could not measure RAM-disk footprint under %s: %s",
+                batch_idx,
+                root,
+                exc,
+            )
+        return total
+
     def assert_ramdisk_has_room_for(self, batch) -> None:
         """Pre-batch gate: hard-fail if the RAM-disk lacks room for this batch.
 
-        Required free bytes = est_bytes × 1.3 (30 % headroom for FS overhead
-        + transient duplicates during cleanup). Raises PipelineError when:
+        Required effective free bytes = ``batch.est_bytes`` (the planner already
+        uses a conservative per-frame byte budget). Raises PipelineError when:
           * ramdisk_path is unset (caller should have caught this earlier);
           * disk_usage() fails (path missing / unmounted);
-          * free space is below the requirement.
+          * effective space is below the requirement.
+
+        Effective space is ``disk_usage().free`` plus bytes already stored under
+        this job's ``batch_<NN>/`` tree. After a pause mid-batch, frames and
+        partial encode outputs remain on the RAM-disk; they reduce reported free
+        space but are still available for the same batch, so they are counted
+        here.
 
         We re-check on every batch (not just the first) because earlier
         batches' cleanup must succeed before the next one starts — a leaked
@@ -196,26 +221,39 @@ class PipelineContext:
                 f"RAM-disk path is unreadable: {self.ramdisk_path}",
                 context={"batch_idx": batch.index, "reason": str(exc)},
             ) from exc
-        required = int(batch.est_bytes * _RAMDISK_BATCH_SAFETY)
-        if usage.free < required:
+        required = int(batch.est_bytes)
+        existing_batch_bytes = self._batch_dir_usage_bytes(batch.index)
+        effective_free = usage.free + existing_batch_bytes
+        if effective_free < required:
             need_mb = required // (1024 * 1024)
-            have_mb = usage.free // (1024 * 1024)
+            have_mb = effective_free // (1024 * 1024)
+            detail = (
+                f" ({usage.free // (1024 * 1024)} MiB reported free + "
+                f"{existing_batch_bytes // (1024 * 1024)} MiB in this job's batch folder)"
+                if existing_batch_bytes > 0
+                else ""
+            )
             raise PipelineError(
                 f"RAM-disk insufficient for batch {batch.index:02d}: "
-                f"need {need_mb} MiB, have {have_mb} MiB free. "
+                f"need {need_mb} MiB, have {have_mb} MiB effective free{detail}. "
                 f"Increase RAM-disk size or reduce preset's batching.chunk_seconds.",
                 context={
                     "batch_idx": batch.index,
                     "required_bytes": required,
                     "free_bytes": usage.free,
+                    "existing_batch_bytes": existing_batch_bytes,
+                    "effective_free_bytes": effective_free,
                     "ramdisk_path": str(self.ramdisk_path),
                 },
             )
         log.debug(
-            "batch %02d RAM-disk gate ok: need %d MiB, have %d MiB free",
+            "batch %02d RAM-disk gate ok: need %d MiB, have %d MiB effective free "
+            "(%d MiB reported free, %d MiB in batch folder)",
             batch.index,
             required // (1024 * 1024),
+            effective_free // (1024 * 1024),
             usage.free // (1024 * 1024),
+            existing_batch_bytes // (1024 * 1024),
         )
 
     def cleanup_batch_dir(self, batch_idx: int) -> None:
@@ -303,14 +341,14 @@ def _ramdisk_usable(ramdisk_path: Path, estimate_bytes: int) -> bool:
         log.warning("ramdisk_path %s unusable (%s); falling back to workdir", ramdisk_path, exc)
         return False
 
-    # If we have an estimate, require headroom; otherwise trust the configured path.
+    # If we have an estimate, require that much free space; otherwise trust the path.
     if estimate_bytes > 0:
-        required = int(estimate_bytes * _RAMDISK_FREE_SAFETY)
+        required = int(estimate_bytes)
         if usage.free < required:
             log.warning(
-                "ramdisk_path %s has %d bytes free, needs %d (estimate × %.1f); "
+                "ramdisk_path %s has %d bytes free, needs %d (planner estimate); "
                 "falling back to workdir",
-                ramdisk_path, usage.free, required, _RAMDISK_FREE_SAFETY,
+                ramdisk_path, usage.free, required,
             )
             return False
     return True

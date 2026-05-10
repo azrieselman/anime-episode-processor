@@ -10,13 +10,15 @@ from __future__ import annotations
 import threading
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from aep.jobs.broker import _MAX_CONCURRENCY_HARD_CAP, JobBroker
-from aep.jobs.models import Job
-from aep.jobs.queue import insert_job, update_job
+from aep.jobs.models import Job, JobState
+from aep.jobs.queue import get_job, insert_job, update_job
+from aep.pipeline.context import PipelineContext
 from aep.persist.db import init_db
 from aep.persist.settings import AppSettings
 
@@ -202,6 +204,14 @@ def test_start_queue_releases_pause_and_dispatch_proceeds() -> None:
             seen.append(job.id)
             if len(seen) >= target:
                 done.set()
+        # Mirror real workers: terminal DB row + auto-pause when nothing left.
+        db_job = get_job(job.id)
+        assert db_job is not None
+        db_job.state = JobState.COMPLETED
+        db_job.current_stage = None
+        db_job.finished_at = datetime.now(UTC).isoformat(timespec="seconds")
+        update_job(db_job)
+        self._maybe_auto_pause_queue_if_idle()
 
     broker = JobBroker()
     with patch(
@@ -224,6 +234,54 @@ def test_start_queue_releases_pause_and_dispatch_proceeds() -> None:
             broker.stop(timeout=2.0)
 
     assert len(seen) == target
+    assert broker.is_queue_paused() is True
+
+
+def test_maybe_auto_pause_queue_if_idle_pauses_when_no_queued_or_running() -> None:
+    """When dispatch is active but every row is terminal, pause until start_queue()."""
+    broker = JobBroker()
+    j = Job(
+        source_path="/data/done.mkv",
+        output_path=None,
+        preset_id="anime_balanced",
+        state=JobState.COMPLETED,
+    )
+    insert_job(j)
+    with patch(
+        "aep.jobs.broker.load_settings",
+        return_value=_settings_default_paused(),
+    ):
+        broker.start()
+        try:
+            broker.start_queue()
+            assert broker.is_queue_paused() is False
+            broker._maybe_auto_pause_queue_if_idle()
+            assert broker.is_queue_paused() is True
+        finally:
+            broker.stop(timeout=2.0)
+
+
+def test_maybe_auto_pause_queue_if_idle_keeps_running_when_jobs_still_queued() -> None:
+    broker = JobBroker()
+    insert_job(
+        Job(
+            source_path="/data/wait.mkv",
+            output_path=None,
+            preset_id="anime_balanced",
+        ),
+    )
+    with patch(
+        "aep.jobs.broker.load_settings",
+        return_value=_settings_default_paused(),
+    ):
+        broker.start()
+        try:
+            broker.start_queue()
+            assert broker.is_queue_paused() is False
+            broker._maybe_auto_pause_queue_if_idle()
+            assert broker.is_queue_paused() is False
+        finally:
+            broker.stop(timeout=2.0)
 
 
 def test_pause_queue_halts_further_dispatch_but_keeps_inflight() -> None:
@@ -335,3 +393,32 @@ def test_job_active_elapsed_returns_none_before_job_start() -> None:
     insert_job(job)
     broker = JobBroker()
     assert broker.get_job_active_elapsed_s(job.id) is None
+
+
+def test_pause_sets_pause_event_without_premature_db_paused_row(tmp_path: Path) -> None:
+    """pause(job_id) cooperates with the worker; DB stays RUNNING until PausedError."""
+    job = Job(source_path=str(tmp_path / "a.mkv"))
+    job.state = JobState.RUNNING
+    insert_job(job)
+
+    broker = JobBroker()
+    workdir = tmp_path / "wd"
+    workdir.mkdir(parents=True, exist_ok=True)
+    ctx = PipelineContext(
+        job_id=job.id,
+        source_path=tmp_path / "a.mkv",
+        workdir=workdir,
+        output_path=tmp_path / "out.mkv",
+        preset_id="anime_balanced",
+        preset_data={},
+    )
+    assert not ctx.pause_event.is_set()
+    with broker._active_lock:
+        broker._active[job.id] = ctx
+
+    broker.pause(job.id)
+
+    assert ctx.pause_event.is_set()
+    loaded = get_job(job.id)
+    assert loaded is not None
+    assert loaded.state == JobState.RUNNING

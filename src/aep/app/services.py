@@ -8,6 +8,7 @@ from in-process broker to a worker-process broker with IPC.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,13 @@ class JobService:
 
     def pause(self, job_id: str) -> None:
         self._broker.pause(job_id)
+
+    def any_job_in_ids_running(self, job_ids: Collection[str]) -> bool:
+        """True if any of the given jobs still has pipeline state ``RUNNING``."""
+        if not job_ids:
+            return False
+        want = frozenset(job_ids)
+        return any(j.state == JobState.RUNNING for j in self.list_jobs() if j.id in want)
 
     def resume(self, job_id: str) -> None:
         self._broker.resume(job_id)

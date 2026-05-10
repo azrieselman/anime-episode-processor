@@ -140,7 +140,7 @@ def test_ramdisk_usable_huge_estimate_returns_false(tmp_path: Path) -> None:
 
 def test_ramdisk_usable_small_estimate_returns_true(tmp_path: Path) -> None:
     rd = tmp_path / "rd"
-    # 1 KB × 1.5 = 1.5 KB; surely available.
+    # 1 KB required; surely available.
     assert _ramdisk_usable(rd, estimate_bytes=1024) is True
 
 

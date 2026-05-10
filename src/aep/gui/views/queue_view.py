@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -45,6 +47,10 @@ _FILE_SORT_MODE = Literal["queue", "name_asc", "name_desc"]
 _DEFAULT_COLUMN_WIDTHS = [280, 240, 140, 88, 140, 88, 88, 220]
 
 _COL_JOB_ID = 1
+
+# After Pause, wait until workers leave RUNNING before showing the idle banner.
+_PAUSE_COMPLETION_POLL_MS = 150
+_PAUSE_COMPLETION_TIMEOUT_S = 600.0
 
 _STAGE_DISPLAY_NAMES: dict[str, str] = {
     "00_probe": "Probing",
@@ -108,6 +114,7 @@ class QueueView(QWidget):
         self._refresh_timer.timeout.connect(self._refresh)
         self._refresh_timer.start()
         self._sync_dispatch_order_with_broker()
+        self._pause_watch_deadline: float | None = None
 
     def _dispatch_order_for_file_sort(self) -> QueuedDispatchOrder:
         if self._file_sort_mode == "queue":
@@ -147,10 +154,9 @@ class QueueView(QWidget):
 
         toolbar.addStretch(1)
 
-        # Queue-level Start/Pause toggle. Sits left of the per-job buttons
-        # because it gates ALL dispatch — the user's mental model is "first
-        # configure jobs, then click Start Queue."
-        self._queue_toggle_btn = QPushButton("Start Queue")
+        # Single Start/Pause control: toggles queue dispatch and pauses or
+        # resumes every in-flight job (running workers hold pipeline contexts).
+        self._queue_toggle_btn = QPushButton("Start")
         self._queue_toggle_btn.setStyleSheet("font-weight: 600;")
         self._queue_toggle_btn.clicked.connect(self._on_queue_toggle_clicked)
         toolbar.addWidget(self._queue_toggle_btn)
@@ -158,8 +164,6 @@ class QueueView(QWidget):
 
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self._on_cancel_clicked)
-        self._pause_btn = QPushButton("Pause")
-        self._pause_btn.clicked.connect(self._on_pause_clicked)
         self._resume_btn = QPushButton("Resume")
         self._resume_btn.clicked.connect(self._on_resume_clicked)
         self._remove_btn = QPushButton("Remove")
@@ -170,7 +174,6 @@ class QueueView(QWidget):
         self._retry_btn.clicked.connect(self._on_retry_clicked)
         for b in (
             self._cancel_btn,
-            self._pause_btn,
             self._resume_btn,
             self._retry_btn,
             self._remove_btn,
@@ -441,11 +444,6 @@ class QueueView(QWidget):
         if jid:
             self._services.jobs.cancel(jid)
 
-    def _on_pause_clicked(self) -> None:
-        jid = self._current_selected_job_id()
-        if jid:
-            self._services.jobs.pause(jid)
-
     def _on_resume_clicked(self) -> None:
         jid = self._current_selected_job_id()
         if jid:
@@ -464,7 +462,7 @@ class QueueView(QWidget):
             self,
             "Clear queue?",
             "Remove all jobs and delete their work folders (and ramdisk artifacts)? "
-            "Running jobs will be cancelled.",
+            "Running jobs will be stopped and returned to the queue.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -501,24 +499,72 @@ class QueueView(QWidget):
                 self,
                 "Job re-queued",
                 "The failed job was returned to the queue. "
-                "Click **Start Queue** so the dispatcher can run it "
+                "Click **Start** so the dispatcher can run it "
                 "(the queue is paused after jobs finish or fail).",
             )
 
     # ----- queue-level start/pause --------------------------------------
 
     def _on_queue_toggle_clicked(self) -> None:
-        """Toggle the queue-level pause flag.
-
-        Dispatch state lives in the broker; we just call across and then
-        re-render the button label. The QTimer refresh would also catch the
-        change but doing it inline gives instant feedback.
-        """
+        """Toggle queue dispatch plus all active pipeline workers."""
         if self._services.jobs.is_queue_paused():
+            jobs = self._services.jobs.list_jobs()
+            # Checkpoint pauses (`PausedError`) leave rows PAUSED until toolbar
+            # Resume or this toggle. Re-queue those *before* ``start_queue`` so
+            # dispatch is never briefly unpaused with zero QUEUED rows (the
+            # dispatcher would sleep and jobs that only show as queued after
+            # resume could appear stuck).
+            for job in jobs:
+                if job.state == JobState.PAUSED:
+                    self._services.jobs.resume(job.id)
             self._services.jobs.start_queue()
+            self._pause_watch_deadline = None
+            self._queue_toggle_btn.setEnabled(True)
+            self._refresh_queue_toggle()
         else:
+            jobs = self._services.jobs.list_jobs()
+            running_ids = frozenset(j.id for j in jobs if j.state == JobState.RUNNING)
             self._services.jobs.pause_queue()
+            for jid in running_ids:
+                self._services.jobs.pause(jid)
+            if running_ids:
+                self._pause_watch_deadline = time.monotonic() + _PAUSE_COMPLETION_TIMEOUT_S
+                self._queue_toggle_btn.setEnabled(False)
+                self._queue_status_label.setText(
+                    "Pausing — waiting for workers to reach a safe stop…",
+                )
+                QTimer.singleShot(
+                    _PAUSE_COMPLETION_POLL_MS,
+                    partial(self._finish_pause_when_workers_idle, running_ids),
+                )
+            else:
+                self._refresh_queue_toggle()
+
+    def _finish_pause_when_workers_idle(self, pending: frozenset[str]) -> None:
+        """Complete queue Pause UX once jobs leave RUNNING or a timeout hits."""
+        deadline = self._pause_watch_deadline
+        now = time.monotonic()
+        timed_out = deadline is not None and now >= deadline
+        try:
+            still_running = self._services.jobs.any_job_in_ids_running(pending)
+        except Exception:
+            still_running = False
+
+        if still_running and not timed_out:
+            QTimer.singleShot(
+                _PAUSE_COMPLETION_POLL_MS,
+                partial(self._finish_pause_when_workers_idle, pending),
+            )
+            return
+
+        self._pause_watch_deadline = None
+        self._queue_toggle_btn.setEnabled(True)
         self._refresh_queue_toggle()
+        if still_running and timed_out:
+            base = self._queue_status_label.text()
+            self._queue_status_label.setText(
+                base + " Some workers are still finishing a long step; states update when they stop.",
+            )
 
     def _refresh_queue_toggle(self) -> None:
         """Sync the toggle button label + status text to broker state."""
@@ -530,13 +576,13 @@ class QueueView(QWidget):
             queue_elapsed_s = 0.0
         queue_elapsed = self._format_elapsed(queue_elapsed_s)
         if paused:
-            self._queue_toggle_btn.setText("Start Queue")
+            self._queue_toggle_btn.setText("Start")
             self._queue_status_label.setText(
-                f"Queue paused — active runtime {queue_elapsed}. Click Start Queue to continue.",
+                f"Paused — active runtime {queue_elapsed}. Click Start to resume dispatch and workers.",
             )
         else:
-            self._queue_toggle_btn.setText("Pause Queue")
-            self._queue_status_label.setText(f"Queue running — active runtime {queue_elapsed}.")
+            self._queue_toggle_btn.setText("Pause")
+            self._queue_status_label.setText(f"Running — active runtime {queue_elapsed}.")
 
     @staticmethod
     def _format_elapsed(seconds: float | None) -> str:

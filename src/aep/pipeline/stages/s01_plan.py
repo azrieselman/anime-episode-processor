@@ -355,14 +355,6 @@ def _resolve_target_geometry(preset: Preset, media) -> tuple[int | None, int | N
 # bytes-per-frame lands at ~1.5-2.5 bytes/px. We keep 4 to stay safe.
 _BYTES_PER_PIXEL = 4
 
-# How many stage-output buffers can sit on the ramdisk simultaneously in the
-# worst case. Stages are pipelined: while interpolate reads upscale's output,
-# postprocess may already be writing its own. We don't run more than ~2 stage
-# outputs concurrently because each NCNN binary blocks until its dir is
-# written, but we add 0.5 of headroom for partially-written batches.
-_PEAK_CONCURRENT_STAGE_BUFFERS = 2.5
-
-
 def _estimate_frame_bytes(
     *,
     media,
@@ -373,7 +365,8 @@ def _estimate_frame_bytes(
     """Best-effort estimate of peak on-disk frame storage in bytes.
 
     Used by `PipelineContext.stage_dir()` to decide whether the configured
-    ramdisk has enough free space (with a 1.5x safety multiplier on top).
+    ramdisk has enough free space for the planner's byte estimate (no extra
+    multiplier — ``_BYTES_PER_PIXEL`` is already conservative).
     A return of 0 means "unknown" — the routing layer treats this as
     "trust the user" and uses the ramdisk if it's writable.
 
@@ -381,7 +374,7 @@ def _estimate_frame_bytes(
         frames        = duration_s * source_fps   (or media.primary.nb_frames)
         out_frames    = frames * interpolate_multiplier
         out_w, out_h  = target geometry, falling back to source geometry
-        peak_bytes    = out_frames * out_w * out_h * 4 * peak_concurrent_buffers
+        peak_bytes    = out_frames * out_w * out_h * _BYTES_PER_PIXEL
 
     Returns 0 if any required input is missing.
     """
@@ -428,7 +421,7 @@ def _estimate_frame_bytes(
     out_frames = frames * max(1, multiplier)
 
     bytes_per_frame = out_w * out_h * _BYTES_PER_PIXEL
-    peak = int(out_frames * bytes_per_frame * _PEAK_CONCURRENT_STAGE_BUFFERS)
+    peak = int(out_frames * bytes_per_frame)
     return max(0, peak)
 
 
