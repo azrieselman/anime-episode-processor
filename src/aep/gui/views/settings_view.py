@@ -109,6 +109,11 @@ class SettingsView(QWidget):
         gf.addRow("", self._keep_temp)
         self._confirm_overwrite = QCheckBox("Confirm before overwriting existing files")
         gf.addRow("", self._confirm_overwrite)
+        self._show_queue_job_id = QCheckBox("Show job ID column in queue table")
+        self._show_queue_job_id.setToolTip(
+            "Display each job's internal ID in the Queue tab. Useful for logs and support."
+        )
+        gf.addRow("", self._show_queue_job_id)
         root.addWidget(general)
 
         hw = QGroupBox("Hardware")
@@ -259,6 +264,7 @@ class SettingsView(QWidget):
         self._naming.setText(s.general.output_naming_template)
         self._keep_temp.setChecked(s.general.keep_temp_artifacts)
         self._confirm_overwrite.setChecked(s.general.confirm_overwrite)
+        self._show_queue_job_id.setChecked(s.general.show_queue_job_id_column)
         self._prefer_nvenc.setChecked(s.hardware.prefer_nvenc)
         idx = self._decode_hwaccel.findData(s.hardware.decode_hwaccel)
         self._decode_hwaccel.setCurrentIndex(idx if idx >= 0 else 0)
@@ -290,6 +296,7 @@ class SettingsView(QWidget):
         s.general.output_naming_template = self._naming.text().strip()
         s.general.keep_temp_artifacts = self._keep_temp.isChecked()
         s.general.confirm_overwrite = self._confirm_overwrite.isChecked()
+        s.general.show_queue_job_id_column = self._show_queue_job_id.isChecked()
         s.hardware.prefer_nvenc = self._prefer_nvenc.isChecked()
         s.hardware.decode_hwaccel = str(self._decode_hwaccel.currentData())  # type: ignore[assignment]
         s.hardware.max_concurrent_jobs = self._max_jobs.value()

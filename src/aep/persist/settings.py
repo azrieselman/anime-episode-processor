@@ -42,6 +42,8 @@ class GeneralSettings(BaseModel):
     # release dispatch. Power users who want fire-and-forget enqueue can flip
     # this in settings.json.
     auto_start_jobs: bool = False
+    # When True, the Queue tab shows a Job ID column (hidden by default).
+    show_queue_job_id_column: bool = False
 
 
 class HardwareSettings(BaseModel):
