@@ -565,6 +565,21 @@ class JobBroker:
                         "job %s: failed to rehydrate media_info from %s: %s",
                         job.id, probe_path, exc,
                     )
+        if ctx.extras.get("resume_from_stage") and ctx.media_info is None and job.probe:
+            try:
+                ctx.media_info = MediaInfo.model_validate(job.probe)
+            except Exception as exc:
+                log.warning(
+                    "job %s: failed to rehydrate media_info from job.probe: %s",
+                    job.id, exc,
+                )
+        if ctx.extras.get("resume_from_stage") and ctx.media_info is None:
+            log.warning(
+                "job %s: resume_from_stage=%s but media_info missing; "
+                "clearing resume to rerun from 00_probe",
+                job.id, job.resume_from_stage,
+            )
+            ctx.extras["resume_from_stage"] = None
         with self._active_lock:
             self._active[job.id] = ctx
 

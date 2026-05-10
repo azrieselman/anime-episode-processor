@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from aep.jobs.broker import JobBroker
-from aep.jobs.queue import QueuedDispatchOrder
 from aep.jobs.cleanup import cleanup_job_artifacts
 from aep.jobs.models import Job, JobState
+from aep.jobs.queue import QueuedDispatchOrder
 from aep.jobs.queue import delete_job as _delete_job
 from aep.jobs.queue import get_job as _get_job
 from aep.jobs.queue import update_job as _update_job

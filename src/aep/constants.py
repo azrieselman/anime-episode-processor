@@ -63,8 +63,8 @@ PINNED_VERSIONS = {
     "realesrgan-ncnn-vulkan": "0.2.0",
     "rife-ncnn-vulkan": "20250112",
     "waifu2x-ncnn-vulkan": "20220728",
-    "anime4kcpp": "3.0.0",
-    "anime4kcpp-vs": "3.0.0",
+    "anime4kcpp": "3.2.0",
+    "anime4kcpp-vs": "3.2.0",
     "vapoursynth-vspipe": "R74",
     "ffms2-vapoursynth": "2.40",
 }

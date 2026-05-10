@@ -3,7 +3,7 @@ meta:
   name: Anime Balanced 1440p
   description: >
     Default preset. Strong line-art fidelity for cel anime with sensible speed.
-    Anime4K ACNet+HDN 2x (CUDA with OpenCL fallback) + RIFE v4.22-lite 2x interpolation + HEVC NVENC at p6/CQ19.
+    Anime4K ACNet F8B8 HDN 2x (CUDA with OpenCL fallback) + RIFE v4.22-lite 2x interpolation + HEVC NVENC at p6/CQ19.
     Tuned for RTX 3080 10GB.
   builtin: true
   suitable_for: [anime_2d, anime_compressed]
@@ -14,7 +14,7 @@ target_resolution:
   named: "1440p"
 upscaler:
   engine: anime4kcpp-vs
-  model: acnet-hdn0
+  model: acnet-f8b8-hdn
   scale: 2
   denoise: 1
   tile_size: 256

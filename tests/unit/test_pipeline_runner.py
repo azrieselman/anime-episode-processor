@@ -11,12 +11,17 @@ from pathlib import Path
 import pytest
 
 from aep.errors import CancelledError, PausedError, PipelineError
+from aep.media.models import FormatInfo, MediaInfo, StreamInfo
 from aep.persist.db import init_db
 from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.cache import record as cache_record
 from aep.pipeline.context import PipelineContext
 from aep.pipeline.events import EventSink
-from aep.pipeline.runner import PipelineRunner, build_default_stages
+from aep.pipeline.runner import (
+    PipelineRunner,
+    _rehydrate_plan_from_cached_stage_dir,
+    build_default_stages,
+)
 from aep.pipeline.stage import BaseStage, StagePlan, StageResult
 
 
@@ -110,6 +115,67 @@ def test_cache_hit_skips_execution(tmp_runtime: Path, tmp_path: Path) -> None:
     results = runner.run(ctx, EventSink())
     assert a.ran is False
     assert results["a"].cached is True
+
+
+def test_probe_cache_hit_rehydrates_media_info(tmp_runtime: Path, tmp_path: Path) -> None:
+    """Skipping 00_probe via cache must still populate ctx.media_info for 01_plan."""
+    init_db()
+    ctx = _make_ctx(tmp_path)
+    ctx.source_path.write_bytes(b"dummy")
+    ctx.workdir.mkdir(parents=True, exist_ok=True)
+    cached_probe_dir = ctx.workdir / "00_probe"
+    cached_probe_dir.mkdir(parents=True, exist_ok=True)
+    media = MediaInfo(
+        source_path=str(ctx.source_path),
+        fmt=FormatInfo(filename="src.mkv", format_name="matroska", duration_s=1.0),
+        streams=[
+            StreamInfo(
+                index=0,
+                kind="video",
+                codec_name="h264",
+                width=1920,
+                height=1080,
+            )
+        ],
+    )
+    (cached_probe_dir / "probe.json").write_text(
+        media.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+    from aep.pipeline.stages.s00_probe import ProbeStage
+
+    probe = ProbeStage(ffprobe=None)
+    plan = probe.plan(ctx)
+    cache_record(ctx.job_id, probe.name, plan.cache_key, cached_probe_dir)
+
+    results = PipelineRunner([probe]).run(ctx, EventSink())
+    assert results["00_probe"].cached is True
+    assert ctx.media_info is not None
+    assert ctx.media_info.fmt.filename == "src.mkv"
+
+
+def test_rehydrate_cached_probe_dir_loads_probe_json(tmp_path: Path) -> None:
+    d = tmp_path / "cached"
+    d.mkdir()
+    media = MediaInfo(
+        source_path="x.mkv",
+        fmt=FormatInfo(filename="x.mkv", format_name="matroska", duration_s=1.0),
+        streams=[
+            StreamInfo(index=0, kind="video", codec_name="h264", width=640, height=480)
+        ],
+    )
+    (d / "probe.json").write_text(media.model_dump_json(indent=2), encoding="utf-8")
+    ctx = PipelineContext(
+        job_id="j",
+        source_path=tmp_path / "x.mkv",
+        workdir=tmp_path / "w",
+        output_path=tmp_path / "o.mkv",
+        preset_id="anime_balanced",
+        preset_data={},
+    )
+    _rehydrate_plan_from_cached_stage_dir(ctx, "00_probe", d)
+    assert ctx.media_info is not None
+    assert ctx.media_info.source_path == "x.mkv"
 
 
 def test_pause_then_cancel(tmp_runtime: Path, tmp_path: Path) -> None:

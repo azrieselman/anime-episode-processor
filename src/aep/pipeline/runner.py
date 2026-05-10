@@ -22,6 +22,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from aep.errors import CancelledError, PausedError, PipelineError, StageError
+from aep.media.models import MediaInfo
 from aep.persist.settings import PipelineOrder
 from aep.pipeline.batches import BatchSpec
 from aep.pipeline.cache import (
@@ -45,9 +46,21 @@ log = logging.getLogger(__name__)
 def _rehydrate_plan_from_cached_stage_dir(
     ctx: PipelineContext, stage_name: str, stage_output_dir: Path
 ) -> None:
-    """After a cache hit, `run()` is skipped so ctx.plan frame dirs stay stale.
-    Merge paths from the cached stage manifest so downstream stages see inputs.
-    """
+    """After a cache hit, `run()` is skipped — restore ctx fields from disk."""
+    if stage_name == "00_probe":
+        probe_path = stage_output_dir / "probe.json"
+        if probe_path.is_file():
+            try:
+                doc = json.loads(probe_path.read_text(encoding="utf-8"))
+                ctx.media_info = MediaInfo.model_validate(doc)
+            except Exception:
+                log.warning(
+                    "rehydrate ctx.media_info from cached %s failed",
+                    stage_output_dir,
+                    exc_info=True,
+                )
+        return
+
     manifest = read_stage_manifest(stage_output_dir)
     if not manifest:
         return

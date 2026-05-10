@@ -31,10 +31,10 @@ from PySide6.QtWidgets import (
 )
 
 from aep.app.services import AppServices
-from aep.jobs.queue import QueuedDispatchOrder
 from aep.gui import theme
 from aep.gui.widgets.drop_area import DropArea
 from aep.jobs.models import Job, JobState
+from aep.jobs.queue import QueuedDispatchOrder
 from aep.pipeline.events import StageEvent
 
 log = logging.getLogger(__name__)

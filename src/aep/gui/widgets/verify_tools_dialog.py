@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -35,8 +36,10 @@ from aep.adapters.verification import (
     ToolStatus,
     check_adapter,
 )
+from aep.app.pinned_tools_refresh import pins_to_refresh
 from aep.bench.hardware import probe_hardware
 from aep.constants import PINNED_VERSIONS
+from aep.gui.widgets.first_run_dialog import FirstRunDialog
 
 log = logging.getLogger(__name__)
 
@@ -91,13 +94,16 @@ class VerifyToolsDialog(QDialog):
         refresh_btn = QPushButton("Re-probe", self)
         refresh_btn.clicked.connect(self._refresh)
         btns.addButton(refresh_btn, QDialogButtonBox.ButtonRole.ActionRole)
+
+        self._fetch_pins_btn = QPushButton("Download / refresh pinned tools…", self)
+        self._fetch_pins_btn.clicked.connect(self._on_download_refresh_pins)
+        btns.addButton(self._fetch_pins_btn, QDialogButtonBox.ButtonRole.ActionRole)
+
         close_btn = btns.addButton(QDialogButtonBox.StandardButton.Close)
         close_btn.clicked.connect(self.accept)
         root.addWidget(btns)
 
-    def _refresh(self) -> None:
-        log.info("VerifyToolsDialog: re-probing")
-
+    def _collect_adapter_statuses(self) -> list[ToolStatus]:
         statuses: list[ToolStatus] = []
         for cls in DEFAULT_ADAPTERS:
             try:
@@ -111,6 +117,39 @@ class VerifyToolsDialog(QDialog):
                     status="missing",
                     note=str(exc),
                 ))
+        return statuses
+
+    def _on_download_refresh_pins(self) -> None:
+        statuses = self._collect_adapter_statuses()
+        pins = pins_to_refresh(statuses)
+        if not pins:
+            QMessageBox.information(
+                self,
+                "Tools up to date",
+                "Nothing is missing or version-mismatched relative to this build's pinned tools.",
+            )
+            self._refresh()
+            return
+
+        dlg = FirstRunDialog(
+            self,
+            missing_pins=pins,
+            window_title="Anime Episode Processor — Refresh pinned tools",
+            heading="Re-downloading pinned tool archives",
+            intro_html=(
+                "This build expects specific tool versions. Missing or outdated installs will be "
+                "replaced from the official vendor URLs (SHA256-verified), which may download up "
+                "to a few gigabytes."
+            ),
+            force_refresh=True,
+        )
+        dlg.exec()
+        self._refresh()
+
+    def _refresh(self) -> None:
+        log.info("VerifyToolsDialog: re-probing")
+
+        statuses = self._collect_adapter_statuses()
 
         self._table.setRowCount(len(statuses))
         for row, st in enumerate(statuses):
@@ -131,6 +170,9 @@ class VerifyToolsDialog(QDialog):
             self._hw_label.setText(_format_hardware(hw))
         except Exception as exc:
             self._hw_label.setText(f"hardware probe failed: {exc}")
+
+        pin_count = len(pins_to_refresh(statuses))
+        self._fetch_pins_btn.setEnabled(pin_count > 0)
 
 
 def _status_label(status: str) -> str:

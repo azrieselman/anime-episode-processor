@@ -171,33 +171,33 @@ WAIFU2X_PIN = ToolPin(
 ANIME4KCPP_PIN = ToolPin(
     tool_id="anime4kcpp",
     subdir="anime4kcpp",
-    version="3.0.0",
+    version="3.2.0",
     archive_url=(
         "https://github.com/TianZerL/Anime4KCPP/releases/download/"
-        "v3.0.0/Anime4KCPP-CLI-v3.0.0-x64-MSVC.7z"
+        "v3.2.0/Anime4KCPP-CLI-v3.2.0-x64-MSVC.zip"
     ),
-    archive_sha256="65d6a9b1befef0167f8b0c3e57ab10207584b3344e02637c0cf9afedda1d2164",
-    archive_format="7z",
+    archive_sha256="82897b0f03ddb88ab3d1affb745baf99506cfe3ceffaeaf73796c6dea4077f19",
+    archive_format="zip",
     files=(
         ("ac_cli.exe", "ac_cli.exe"),
-        ("avcodec-60.dll", "avcodec-60.dll"),
-        ("avformat-60.dll", "avformat-60.dll"),
-        ("avutil-58.dll", "avutil-58.dll"),
-        ("swresample-4.dll", "swresample-4.dll"),
-        ("swscale-7.dll", "swscale-7.dll"),
+        ("avcodec-62.dll", "avcodec-62.dll"),
+        ("avformat-62.dll", "avformat-62.dll"),
+        ("avutil-60.dll", "avutil-60.dll"),
+        ("swresample-6.dll", "swresample-6.dll"),
+        ("swscale-9.dll", "swscale-9.dll"),
     ),
 )
 
 ANIME4KCPP_VS_FILTER_PIN = ToolPin(
     tool_id="anime4kcpp-vs",
     subdir="anime4kcpp-filter-vs",
-    version="3.0.0",
+    version="3.2.0",
     archive_url=(
         "https://github.com/TianZerL/Anime4KCPP/releases/download/"
-        "v3.0.0/Anime4KCPP-Filter-AVS-VS-v3.0.0-x86-x64-MSVC.7z"
+        "v3.2.0/Anime4KCPP-Filter-AVS-VS-v3.2.0-x86-x64-MSVC.zip"
     ),
-    archive_sha256="be38d89d014151d19a15749f1bb70195939bc9ff63e8251f71cd065e2536d0db",
-    archive_format="7z",
+    archive_sha256="61aa13b238688a482d5d6e2cde38e86a4c223e75f54ac9a411b65540d03abae2",
+    archive_format="zip",
     files=(
         ("x64/ac_filter_avs_vs.dll", "ac_filter_avs_vs.dll"),
     ),

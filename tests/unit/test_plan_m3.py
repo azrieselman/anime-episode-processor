@@ -239,7 +239,7 @@ def test_anime4k_balanced_active_with_known_model() -> None:
     media, primary = _make_media()
     preset = _make_preset(
         engine="anime4kcpp",
-        model="acnet-hdn-gan",
+        model="acnet-f8b8-hdn",
         scale=2,
         denoise=1,
         interp_enabled=False,
@@ -270,7 +270,7 @@ def test_anime4k_vs_active_with_known_model() -> None:
     media, primary = _make_media()
     preset = _make_preset(
         engine="anime4kcpp-vs",
-        model="acnet-hdn-gan",
+        model="acnet-f8b8-hdn",
         scale=2,
         denoise=1,
         interp_enabled=False,

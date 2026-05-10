@@ -159,9 +159,10 @@ class SettingsView(QWidget):
         self._anime4k_threads = QSpinBox()
         self._anime4k_threads.setRange(1, 64)
         self._anime4k_threads.setToolTip(
-            "Parallel Anime4K frame workers. Higher values increase throughput but use more CPU/GPU resources."
+            "Anime4KCPP CLI -t: thread count for multi-frame image batches "
+            "(internal library parallelism; applies to the ac_cli engine only)."
         )
-        hf.addRow("Anime4K worker threads:", self._anime4k_threads)
+        hf.addRow("Anime4K CLI threads (-t):", self._anime4k_threads)
         self._rife_threads = QLineEdit()
         self._rife_threads.setPlaceholderText("10:10:10")
         self._rife_threads.setToolTip(

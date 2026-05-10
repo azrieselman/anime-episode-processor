@@ -1,35 +1,36 @@
 """Anime4KCPP adapter.
 
-Anime4KCPP v3 uses `ac_cli` and supports multiple processors (cpu/opencl/cuda).
-We default to ACNet + HDN mode and select CUDA when available, otherwise OpenCL.
+Anime4KCPP v3.2+ uses `ac_cli` with multi-file `-i`/`-o`, `-t` for threading, and
+multiple processors (cpu/opencl/cuda). We default to ACNet F8B8 + mild denoise
+(`acnet-f8b8-hdn`) and select CUDA when available, otherwise OpenCL.
 """
 
 from __future__ import annotations
 
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from aep.adapters.anime4kcpp_models import (
+    DEFAULT_ANIME4K_MODEL,
+    KNOWN_ANIME4K_MODELS,
+)
 from aep.adapters.base import env_with_tool_dirs
 from aep.adapters.ncnn_base import NcnnRunResult, NcnnVulkanAdapter
 from aep.constants import BIN_ANIME4KCPP
 from aep.util.proc import ProcError, run_capture
 
-_KNOWN_MODELS: frozenset[str] = frozenset({
-    "acnet",
-    "acnet-gan",
-    "acnet-hdn",
-    "acnet-hdn-gan",
-})
+# Windows cmdline limit is ~8191 chars; stay under for argv quoting/overhead.
+_MAX_ARGV_CHARS = 7000
 
 
 @dataclass(frozen=True)
 class Anime4kcppJob:
     input_path: Path
     output_path: Path
-    model_id: str = "acnet-hdn-gan"
+    model_id: str = DEFAULT_ANIME4K_MODEL
     scale: int = 2
     prefer_cuda: bool = True
     tile_size: int = 256
@@ -84,27 +85,98 @@ class Anime4kcppAdapter(NcnnVulkanAdapter):
             self._preferred_processor = "cpu"
         return self._preferred_processor
 
+    def _argv_char_len(self, argv: Sequence[str | Path]) -> int:
+        return sum(len(str(a)) for a in argv) + max(0, len(argv) - 1)
+
+    def build_anime4kcpp_argv_batch(
+        self,
+        inputs: Sequence[Path],
+        outputs: Sequence[Path],
+        *,
+        model_id: str,
+        scale: int,
+        processor: str,
+        gpu_id: int,
+        threads: int,
+    ) -> list[str | Path]:
+        if len(inputs) != len(outputs) or not inputs:
+            raise ValueError("inputs and outputs must be same non-empty length")
+        argv: list[str | Path] = [
+            self.path,
+            "-i",
+            *[str(p) for p in inputs],
+            "-o",
+            *[str(p) for p in outputs],
+            "-m",
+            model_id,
+            "-p",
+            processor,
+            "-d",
+            str(gpu_id),
+            "-f",
+            str(float(scale)),
+            "-t",
+            str(threads),
+        ]
+        return argv
+
     def build_anime4kcpp_argv(
         self,
         job: Anime4kcppJob,
         *,
         tile_size_override: int | None = None,
+        processor_override: str | None = None,
     ) -> list[str | Path]:
         # Anime4KCPP does not expose NCNN-like tile controls. We keep the same
         # method signature as other adapters so stage 05 can share dispatch code.
         _unused_tile = tile_size_override if tile_size_override is not None else job.tile_size
         _ = _unused_tile
-        preferred_processor = self._detect_preferred_processor(prefer_cuda=job.prefer_cuda)
-        argv: list[str | Path] = [
-            self.path,
-            "-i", str(job.input_path),
-            "-o", str(job.output_path),
-            "-m", str(job.model_id),
-            "-p", preferred_processor,
-            "-d", str(job.gpu_id),
-            "-f", str(job.scale),
-        ]
-        return argv
+        processor = processor_override or self._detect_preferred_processor(
+            prefer_cuda=job.prefer_cuda,
+        )
+        return self.build_anime4kcpp_argv_batch(
+            [job.input_path],
+            [job.output_path],
+            model_id=job.model_id,
+            scale=job.scale,
+            processor=processor,
+            gpu_id=job.gpu_id,
+            threads=job.threads,
+        )
+
+    def _chunk_input_output_pairs(
+        self,
+        pairs: list[tuple[Path, Path]],
+        *,
+        model_id: str,
+        scale: int,
+        gpu_id: int,
+        threads: int,
+        processor: str,
+    ) -> list[list[tuple[Path, Path]]]:
+        chunks: list[list[tuple[Path, Path]]] = []
+        current: list[tuple[Path, Path]] = []
+        for pair in pairs:
+            trial = current + [pair]
+            ins = [p[0] for p in trial]
+            outs = [p[1] for p in trial]
+            argv = self.build_anime4kcpp_argv_batch(
+                ins,
+                outs,
+                model_id=model_id,
+                scale=scale,
+                processor=processor,
+                gpu_id=gpu_id,
+                threads=threads,
+            )
+            if self._argv_char_len(argv) <= _MAX_ARGV_CHARS or not current:
+                current = trial
+            else:
+                chunks.append(current)
+                current = [pair]
+        if current:
+            chunks.append(current)
+        return chunks
 
     def run_frame_sequence(
         self,
@@ -118,74 +190,74 @@ class Anime4kcppAdapter(NcnnVulkanAdapter):
         threads: int = 4,
         on_progress=None,
     ) -> NcnnRunResult:
-        # NOTE: Anime4KCPP ac_cli.exe does NOT support directory input/output.
-        # Keep this stage as one-process-per-frame (parallelized via workers).
         frames = sorted(input_dir.glob(f"*.{frame_format}"))
         if not frames:
             raise ValueError(f"no input frames found in {input_dir}")
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        pairs = [(f, output_dir / f.name) for f in frames]
+        processor = self._detect_preferred_processor(prefer_cuda=prefer_cuda)
+        gpu_id = 0
+        chunks = self._chunk_input_output_pairs(
+            pairs,
+            model_id=model_id,
+            scale=scale,
+            gpu_id=gpu_id,
+            threads=threads,
+            processor=processor,
+        )
 
         t0 = time.monotonic()
         attempts = 0
         warnings: list[str] = []
         rationale: list[str] = []
         env = env_with_tool_dirs()
-        processor = self._detect_preferred_processor(prefer_cuda=prefer_cuda)
         rationale.append(f"anime4k processor={processor}")
 
-        def _run_one(frame: Path, proc: str) -> None:
-            out = output_dir / frame.name
-            job = Anime4kcppJob(
-                input_path=frame,
-                output_path=out,
+        def _run_batch(
+            batch: list[tuple[Path, Path]],
+            proc_name: str,
+        ) -> None:
+            nonlocal attempts
+            attempts += 1
+            self._preferred_processor = proc_name
+            ins = [p[0] for p in batch]
+            outs = [p[1] for p in batch]
+            argv = self.build_anime4kcpp_argv_batch(
+                ins,
+                outs,
                 model_id=model_id,
                 scale=scale,
-                prefer_cuda=prefer_cuda,
+                processor=proc_name,
+                gpu_id=gpu_id,
                 threads=threads,
             )
-            self._preferred_processor = proc
-            argv = self.build_anime4kcpp_argv(job)
-            run_capture(argv, env=env, timeout=120.0, check=True)
+            run_capture(argv, env=env, timeout=600.0, check=True)
 
-        start_idx = 0
-        if frames and processor == "cuda":
-            # Probe a single frame first so CUDA capability failures are detected
-            # deterministically before we fan out worker processes.
-            attempts += 1
+        done_frames = 0
+        total = len(frames)
+
+        for chunk_idx, chunk in enumerate(chunks):
+            proc = processor
             try:
-                _run_one(frames[0], "cuda")
+                _run_batch(chunk, proc)
             except ProcError as exc:
                 stderr = (exc.result.stderr or "").lower()
-                if processor == "cuda" and ("cuda" in stderr or "nvidia" in stderr):
+                if (
+                    chunk_idx == 0
+                    and proc == "cuda"
+                    and ("cuda" in stderr or "nvidia" in stderr)
+                ):
                     processor = "opencl"
+                    self._preferred_processor = "opencl"
                     warnings.append("anime4k: CUDA failed; retrying with OpenCL.")
-                    attempts += 1
-                    _run_one(frames[0], "opencl")
+                    rationale[0] = "anime4k processor=opencl"
+                    _run_batch(chunk, "opencl")
                 else:
                     raise
+            done_frames += len(chunk)
             if on_progress:
-                on_progress(f"1/{len(frames)}")
-            start_idx = 1
-
-        remaining = frames[start_idx:]
-        done = start_idx
-        if remaining:
-            if threads <= 1:
-                for frame in remaining:
-                    attempts += 1
-                    _run_one(frame, processor)
-                    done += 1
-                    if on_progress:
-                        on_progress(f"{done}/{len(frames)}")
-            else:
-                with ThreadPoolExecutor(max_workers=threads) as pool:
-                    futures = [pool.submit(_run_one, frame, processor) for frame in remaining]
-                    attempts += len(futures)
-                    for fut in as_completed(futures):
-                        fut.result()
-                        done += 1
-                        if on_progress:
-                            on_progress(f"{done}/{len(frames)}")
+                on_progress(f"{done_frames}/{total}")
 
         return NcnnRunResult(
             output_dir=output_dir,
@@ -199,16 +271,12 @@ class Anime4kcppAdapter(NcnnVulkanAdapter):
         )
 
     @staticmethod
-    def validate_combination(model_id: str, scale: int, denoise: int) -> list[str]:
+    def validate_combination(model_id: str, scale: int, _denoise: int) -> list[str]:
         warnings: list[str] = []
-        if model_id not in _KNOWN_MODELS:
+        if model_id not in KNOWN_ANIME4K_MODELS:
             warnings.append(
                 f"Anime4K model {model_id!r} is not in our catalog; "
-                f"known models: {sorted(_KNOWN_MODELS)}"
-            )
-        if "acnet" not in model_id or "hdn" not in model_id:
-            warnings.append(
-                "Anime4K balanced default expects ACNet + HDN model (for example acnet-hdn-gan)."
+                f"see Anime4KCPP wiki Model list (default: {DEFAULT_ANIME4K_MODEL})"
             )
         if scale < 1 or scale > 4:
             warnings.append("Anime4K scale should be within 1..4 for predictable output quality.")

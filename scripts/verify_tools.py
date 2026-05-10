@@ -1,16 +1,20 @@
-"""Verify pinned tool installation: presence + version + checksum (where applicable).
+"""Verify pinned tool installation: presence + version probes for default adapters.
 
 Usage:
-    python scripts/verify_tools.py [--strict]
+    python scripts/verify_tools.py [--strict] [--fetch-mismatched]
 
 Run after `fetch_tools.py` to confirm:
   * Every pinned tool resolves via the same logic the running app uses
     (`ToolAdapter.path`).
   * Every adapter's detected version starts with the pin's version stem.
 
+With ``--fetch-mismatched``, download and reinstall archives for pins that are
+outright missing or whose adapter row is ``missing`` / ``VERSION MISMATCH``,
+using the same runtime fetcher as the GUI (SHA256-verified archives).
+
 Exit codes:
     0   — everything OK
-    1   — something is missing / version mismatch (in --strict mode)
+    1   — something is missing / version mismatch (in --strict mode), or fetch failed
 
 Thin wrapper over `aep.adapters.verification.check_all()` so CI, the GUI's
 Verify Tools dialog, and the first-launch hook all share one implementation.
@@ -32,6 +36,8 @@ from aep.adapters.verification import (  # noqa: E402
     has_any_issues,
     has_blocking_issues,
 )
+from aep.app.pinned_tools_refresh import pins_to_refresh  # noqa: E402
+from aep.app.tools_fetcher import FetchError, fetch_one  # noqa: E402
 
 log = logging.getLogger("verify_tools")
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
@@ -44,7 +50,26 @@ def main() -> int:
         action="store_true",
         help="exit nonzero on any mismatch (CI mode)",
     )
+    parser.add_argument(
+        "--fetch-mismatched",
+        action="store_true",
+        help="re-download pinned archives for missing or version-mismatched tools",
+    )
     args = parser.parse_args()
+
+    if args.fetch_mismatched:
+        prior = check_all()
+        pins = pins_to_refresh(prior)
+        if not pins:
+            log.info("[fetch-mismatched] nothing to install (no missing/mismatch rows)")
+        else:
+            for pin in pins:
+                log.info("[fetch-mismatched] installing %s (%s)", pin.tool_id, pin.version)
+                try:
+                    fetch_one(pin, force=True)
+                except FetchError as exc:
+                    log.error("[fetch-mismatched] failed on %s: %s", pin.tool_id, exc)
+                    return 1
 
     statuses = check_all()
     for s in statuses:

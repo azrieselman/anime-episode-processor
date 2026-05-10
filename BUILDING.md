@@ -124,5 +124,5 @@ stale `dist\build\` directory; the `--clean` flag clears it.
 
 **First-run dialog says "7z extraction requires the `7z` CLI on PATH"** —
 install [7-Zip](https://www.7-zip.org/) and ensure it's on PATH for the
-user account running AEP. (`mkvtoolnix.7z` and `Anime4KCPP-CLI*.7z` need
-it; the other archives are .zip.)
+user account running AEP. (`mkvtoolnix.7z` and other `.7z` pins need it;
+Anime4KCPP and most other tools ship as `.zip`.)

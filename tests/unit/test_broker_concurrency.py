@@ -18,9 +18,9 @@ import pytest
 from aep.jobs.broker import _MAX_CONCURRENCY_HARD_CAP, JobBroker
 from aep.jobs.models import Job, JobState
 from aep.jobs.queue import get_job, insert_job, update_job
-from aep.pipeline.context import PipelineContext
 from aep.persist.db import init_db
 from aep.persist.settings import AppSettings
+from aep.pipeline.context import PipelineContext
 
 
 @pytest.fixture(autouse=True)

@@ -81,11 +81,14 @@ class _FetchWorker(QObject):
         pins: list[ToolPin],
         install_root: Path | None,
         cancel_flag: threading.Event,
+        *,
+        force: bool = False,
     ) -> None:
         super().__init__()
         self._pins = pins
         self._install_root = install_root
         self._cancel_flag = cancel_flag
+        self._force = force
 
     def run(self) -> None:
         def _on_progress(p: FetchProgress) -> None:
@@ -95,6 +98,7 @@ class _FetchWorker(QObject):
             installed = fetch_all(
                 self._pins,
                 install_root=self._install_root,
+                force=self._force,
                 progress_cb=_on_progress,
                 cancel=self._cancel_flag.is_set,
             )
@@ -138,15 +142,27 @@ class FirstRunDialog(QDialog):
         *,
         missing_pins: list[ToolPin] | None = None,
         install_root: Path | None = None,
+        window_title: str | None = None,
+        heading: str | None = None,
+        intro_html: str | None = None,
+        force_refresh: bool = False,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Anime Episode Processor — First-Run Setup")
+        self.setWindowTitle(window_title or "Anime Episode Processor — First-Run Setup")
         self.setModal(True)
         self.resize(720, 480)
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
 
         self._pins = list(missing_pins if missing_pins is not None else ALL_PINS)
         self._install_root = install_root
+        self._force_refresh = force_refresh
+        self._heading_text = heading or "Downloading required tools"
+        self._intro_html = intro_html or (
+            "AEP needs ffmpeg, mkvtoolnix, and a handful of NCNN-Vulkan upscalers "
+            "(about 2 GB total) before it can process video.<br>"
+            "Each archive is downloaded from its vendor's official release URL and "
+            "verified against a pinned SHA256 checksum."
+        )
         self._cancel_flag = threading.Event()
         self._worker: _FetchWorker | None = None
         self._thread: QThread | None = None
@@ -162,19 +178,14 @@ class FirstRunDialog(QDialog):
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
 
-        header = QLabel("Downloading required tools")
+        header = QLabel(self._heading_text)
         header_font = QFont(header.font())
         header_font.setBold(True)
         header_font.setPointSize(header.font().pointSize() + 1)
         header.setFont(header_font)
         root.addWidget(header)
 
-        intro = QLabel(
-            "AEP needs ffmpeg, mkvtoolnix, and a handful of NCNN-Vulkan upscalers "
-            "(about 2 GB total) before it can process video.<br>"
-            "Each archive is downloaded from its vendor's official release URL and "
-            "verified against a pinned SHA256 checksum.",
-        )
+        intro = QLabel(self._intro_html)
         intro.setWordWrap(True)
         intro.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root.addWidget(intro)
@@ -248,7 +259,12 @@ class FirstRunDialog(QDialog):
         self._cancel_flag.clear()
 
         thread = QThread(self)
-        worker = _FetchWorker(self._pins, self._install_root, self._cancel_flag)
+        worker = _FetchWorker(
+            self._pins,
+            self._install_root,
+            self._cancel_flag,
+            force=self._force_refresh,
+        )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)

@@ -26,7 +26,7 @@ import threading
 import urllib.parse
 from functools import partial
 
-from PySide6.QtCore import QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from aep.adapters.verification import check_all, has_any_issues, has_blocking_issues
 from aep.app.services import AppServices
 from aep.app.tools_fetcher import missing_pins as missing_tool_pins
+from aep.app.update_checker import UpdateCheckResult, check_for_updates
 from aep.constants import (
     APP_DISPLAY_NAME,
     WINDOW_DEFAULT_HEIGHT,
@@ -71,6 +72,19 @@ log = logging.getLogger(__name__)
 # imply that other surfaces should link there too, which they shouldn't
 # (CHANGELOG / README cover that).
 ISSUES_NEW_URL = "https://github.com/azrieselman/anime-episode-processor/issues/new"
+
+
+class _UpdateCheckWorker(QObject):
+    """Runs :func:`check_for_updates` on a background :class:`QThread`."""
+
+    finished = Signal(object)
+
+    def __init__(self, version: str) -> None:
+        super().__init__()
+        self._version = version
+
+    def run(self) -> None:
+        self.finished.emit(check_for_updates(self._version))
 
 
 class MainWindow(QMainWindow):
@@ -131,6 +145,11 @@ class MainWindow(QMainWindow):
         )
         report_issue_act.triggered.connect(self._on_report_issue)
         help_menu.addAction(report_issue_act)
+
+        self._update_check_action = QAction("Check for &Updates…", self)
+        self._update_check_action.setStatusTip("Compare this build to the newest GitHub Release.")
+        self._update_check_action.triggered.connect(self._on_check_for_updates)
+        help_menu.addAction(self._update_check_action)
 
         help_menu.addSeparator()
 
@@ -328,6 +347,59 @@ class MainWindow(QMainWindow):
         dlg.activateWindow()
 
         self._startup_verify_dialog = dlg
+
+    def _on_check_for_updates(self) -> None:
+        if getattr(self, "_update_check_thread", None) is not None and self._update_check_thread.isRunning():
+            log.info("Check for Updates: already running")
+            return
+
+        self._status_label.setText("Checking for updates…")
+        self._update_check_action.setEnabled(False)
+
+        thread = QThread(self)
+        worker = _UpdateCheckWorker(__version__)
+        worker.moveToThread(thread)
+
+        worker.finished.connect(self._on_update_check_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(worker.run)
+
+        self._update_check_thread = thread
+        thread.start()
+
+    def _on_update_check_finished(self, result: UpdateCheckResult) -> None:
+        """GUI-thread slot: present the update check outcome."""
+
+        self._status_label.setText("Ready")
+        self._update_check_action.setEnabled(True)
+
+        if result.error:
+            QMessageBox.warning(self, "Update check", result.error)
+            return
+
+        if result.latest_version is None:
+            QMessageBox.information(
+                self,
+                "Update check",
+                "Could not find a release with a readable version tag.",
+            )
+            return
+
+        if result.is_update_available:
+            choice = QMessageBox.question(
+                self,
+                "Update available",
+                result.user_message_summary()
+                + "\n\nOpen the GitHub release page in your browser?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if choice == QMessageBox.StandardButton.Yes and result.release_url:
+                QDesktopServices.openUrl(QUrl(result.release_url))
+        else:
+            QMessageBox.information(self, "Update check", result.user_message_summary())
 
     def _on_about(self) -> None:
         QMessageBox.about(

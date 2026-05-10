@@ -17,18 +17,13 @@ import time
 import zipfile
 from pathlib import Path
 
+from aep.adapters.anime4kcpp_models import DEFAULT_ANIME4K_MODEL, KNOWN_ANIME4K_MODELS
 from aep.adapters.base import ToolAdapter, env_with_tool_dirs
 from aep.adapters.ffmpeg import FFmpegAdapter
 from aep.adapters.ncnn_base import NcnnRunResult
 from aep.util.paths import tools_dir
 from aep.util.proc import ProcError, ProcResult, run_capture
 
-_KNOWN_MODELS: frozenset[str] = frozenset({
-    "acnet",
-    "acnet-gan",
-    "acnet-hdn",
-    "acnet-hdn-gan",
-})
 log = logging.getLogger(__name__)
 
 
@@ -354,10 +349,10 @@ class Anime4kcppVsAdapter:
     @staticmethod
     def validate_combination(model_id: str, scale: int, denoise: int) -> list[str]:
         warnings: list[str] = []
-        if model_id not in _KNOWN_MODELS:
+        if model_id not in KNOWN_ANIME4K_MODELS:
             warnings.append(
                 f"Anime4K model {model_id!r} is not in our catalog; "
-                f"known models: {sorted(_KNOWN_MODELS)}"
+                f"see Anime4KCPP wiki Model list (default: {DEFAULT_ANIME4K_MODEL})"
             )
         if scale < 1 or scale > 4:
             warnings.append("Anime4K scale should be within 1..4 for predictable output quality.")

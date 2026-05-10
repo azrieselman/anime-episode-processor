@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from aep.adapters.anime4kcpp import Anime4kcppAdapter
+from aep.adapters.anime4kcpp_models import DEFAULT_ANIME4K_MODEL
 from aep.adapters.anime4kcpp_vs import Anime4kcppVsAdapter
 from aep.adapters.ncnn_base import (
     NcnnRunResult,
@@ -260,7 +261,7 @@ class UpscaleStage(BaseStage):
                     f"{self.name}: anime4kcpp adapter missing run_frame_sequence()"
                 )
             adapter = adapter_typed  # type: ignore[assignment]
-            resolved_model_id = model or "acnet-hdn-gan"
+            resolved_model_id = model or DEFAULT_ANIME4K_MODEL
             anime_run_result = adapter_typed.run_frame_sequence(
                 input_dir=in_dir,
                 output_dir=out_dir,
@@ -278,7 +279,7 @@ class UpscaleStage(BaseStage):
                     f"{self.name}: anime4kcpp-vs adapter missing run_frame_sequence()"
                 )
             adapter = adapter_typed  # type: ignore[assignment]
-            resolved_model_id = model or "acnet-hdn0"
+            resolved_model_id = model or DEFAULT_ANIME4K_MODEL
             anime_run_result = adapter_typed.run_frame_sequence(
                 input_dir=in_dir,
                 output_dir=out_dir,

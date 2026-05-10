@@ -15,7 +15,7 @@ def test_anime4kcpp_vs_validate_combination_unknown_model_warns() -> None:
 
 
 def test_anime4kcpp_vs_validate_combination_scale_range_warns() -> None:
-    warnings = Anime4kcppVsAdapter.validate_combination("acnet-hdn-gan", 5, 1)
+    warnings = Anime4kcppVsAdapter.validate_combination("acnet-f8b8-hdn", 5, 1)
     assert any("within 1..4" in w for w in warnings)
 
 

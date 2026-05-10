@@ -333,19 +333,42 @@ def test_anime4kcpp_argv_uses_factor_flag_and_processor(tmp_path: Path) -> None:
     job = Anime4kcppJob(
         input_path=tmp_path / "00000001.png",
         output_path=tmp_path / "out" / "00000001.png",
-        model_id="acnet-hdn-gan",
+        model_id="acnet-f8b8-hdn",
         scale=2,
         prefer_cuda=False,
+        threads=8,
     )
     sargs = [str(a) for a in adapter.build_anime4kcpp_argv(job)]
     assert sargs[0].endswith("ac_cli.exe")
     assert "-i" in sargs and str(tmp_path / "00000001.png") in sargs
     assert "-o" in sargs and str(tmp_path / "out" / "00000001.png") in sargs
-    assert "-m" in sargs and "acnet-hdn-gan" in sargs
+    assert "-m" in sargs and "acnet-f8b8-hdn" in sargs
     assert "-p" in sargs and "opencl" in sargs
-    assert "-f" in sargs and "2" in sargs
+    assert "-f" in sargs
+    fi = sargs.index("-f")
+    assert sargs[fi + 1] in ("2", "2.0")
+    assert "-t" in sargs and "8" in sargs
     assert "-z" not in sargs
     assert "-n" not in sargs
+
+
+def test_anime4kcpp_argv_batch_lists_inputs_and_outputs(tmp_path: Path) -> None:
+    tool_dir = _make_fake_tool(tmp_path, "ac_cli.exe", {})
+    adapter = Anime4kcppAdapter(override_dir=tool_dir)
+    argv = adapter.build_anime4kcpp_argv_batch(
+        [tmp_path / "a.png", tmp_path / "b.png"],
+        [tmp_path / "out" / "a.png", tmp_path / "out" / "b.png"],
+        model_id="acnet-f8b8-hdn",
+        scale=2,
+        processor="cuda",
+        gpu_id=0,
+        threads=4,
+    )
+    sargs = [str(a) for a in argv]
+    assert sargs[:3] == [str(adapter.path), "-i", str(tmp_path / "a.png")]
+    assert str(tmp_path / "b.png") in sargs
+    assert "-o" in sargs
+    assert "-t" in sargs and "4" in sargs
 
 
 def test_anime4kcpp_validate_combination_unknown_model_warns() -> None:

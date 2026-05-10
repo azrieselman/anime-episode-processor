@@ -60,7 +60,7 @@ def test_stage05_dispatches_anime4k_engine(tmp_path: Path) -> None:
             "upscale": {
                 "active": True,
                 "engine": "anime4kcpp",
-                "model": "acnet-hdn-gan",
+                "model": "acnet-f8b8-hdn",
                 "scale": 2,
                 "denoise": 1,
                 "tile_size": 256,
@@ -97,7 +97,7 @@ def test_stage05_dispatches_anime4k_vs_engine(tmp_path: Path) -> None:
             "upscale": {
                 "active": True,
                 "engine": "anime4kcpp-vs",
-                "model": "acnet-hdn-gan",
+                "model": "acnet-f8b8-hdn",
                 "scale": 2,
                 "denoise": 1,
                 "tile_size": 256,
