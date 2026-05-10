@@ -1,16 +1,21 @@
 """Job DAO + simple queue ordering.
 
-The queue is just "jobs in QUEUED state, ordered by created_at." The broker pulls one at
-a time, up to HardwareSettings.max_concurrent_jobs, capped by the broker's hard limit.
+Queued jobs are normally ordered by ``created_at`` (FIFO). When the GUI sorts the table by
+filename, the broker uses the same ordering so the first visible queued job matches
+dispatch order.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal
 
 from aep.jobs.models import Job, JobState
 from aep.persist.db import connect
+
+QueuedDispatchOrder = Literal["fifo", "name_asc", "name_desc"]
 
 
 def _now() -> str:
@@ -103,15 +108,31 @@ def list_jobs() -> list[Job]:
     return [_row_to_job(dict(r)) for r in rows]
 
 
-def next_queued() -> Job | None:
+def _queued_filename_sort_key(job: Job) -> tuple[str, str]:
+    return (Path(job.source_path).name.lower(), job.id)
+
+
+def next_queued(order: QueuedDispatchOrder = "fifo") -> Job | None:
+    if order == "fifo":
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE state=? ORDER BY created_at ASC LIMIT 1",
+                (JobState.QUEUED.value,),
+            ).fetchone()
+        if not row:
+            return None
+        return _row_to_job(dict(row))
+
     with connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM jobs WHERE state=? ORDER BY created_at ASC LIMIT 1",
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE state=?",
             (JobState.QUEUED.value,),
-        ).fetchone()
-    if not row:
+        ).fetchall()
+    if not rows:
         return None
-    return _row_to_job(dict(row))
+    jobs = [_row_to_job(dict(r)) for r in rows]
+    jobs.sort(key=_queued_filename_sort_key, reverse=(order == "name_desc"))
+    return jobs[0]
 
 
 def get_job(job_id: str) -> Job | None:

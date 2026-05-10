@@ -27,7 +27,14 @@ from pathlib import Path
 from aep.errors import AEPError, CancelledError, PausedError
 from aep.jobs.cleanup import cleanup_job_artifacts
 from aep.jobs.models import Job, JobState
-from aep.jobs.queue import get_job, insert_job, list_jobs, next_queued, update_job
+from aep.jobs.queue import (
+    QueuedDispatchOrder,
+    get_job,
+    insert_job,
+    list_jobs,
+    next_queued,
+    update_job,
+)
 from aep.logging_setup import attach_job_log_handler, detach_job_log_handler
 from aep.media.models import MediaInfo
 from aep.persist.presets import Preset, load_preset
@@ -116,6 +123,8 @@ class JobBroker:
         self._queue_pause_started_at_s: float | None = None
         self._queue_paused_accum_s: float = 0.0
         self._queue_pause_windows: list[tuple[float, float | None]] = []
+        # Matches QueueView file-column sort: fifo == table "queue" order.
+        self._queued_dispatch_order: QueuedDispatchOrder = "fifo"
 
     # ----- subscription -------------------------------------------------
 
@@ -187,17 +196,19 @@ class JobBroker:
                 settings = load_settings()
                 ramdisk_path = Path(settings.paths.ramdisk_path) if settings.paths.ramdisk_path else None
                 cleanup_job_artifacts(job_id, ramdisk_path=ramdisk_path)
+                self._maybe_auto_pause_queue_if_idle()
 
     def retry_failed(self, job_id: str) -> Job | None:
         job = get_job(job_id)
         if job is None or job.state != JobState.FAILED:
             return None
-        if not job.last_failed_stage:
-            return None
         job.state = JobState.QUEUED
         job.error = None
         job.finished_at = None
         job.current_stage = None
+        # When the worker fails before any stage marks ``current_stage``
+        # (e.g. batched RAM-disk gate before decode starts), ``last_failed_stage``
+        # is None — still allow retry by restarting the full pipeline.
         job.resume_from_stage = job.last_failed_stage
         job.retry_count += 1
         update_job(job)
@@ -239,6 +250,10 @@ class JobBroker:
         self._publish(QueueStateEvent(paused=False))
         self._wake.set()
 
+    def set_queued_dispatch_order(self, order: QueuedDispatchOrder) -> None:
+        """How to choose the next QUEUED job (FIFO vs filename sort)."""
+        self._queued_dispatch_order = order
+
     def pause_queue(self) -> None:
         """Halt the dispatcher from claiming additional queued jobs.
 
@@ -255,6 +270,15 @@ class JobBroker:
                 self._queue_pause_windows.append((now_s, None))
         log.info("queue paused (dispatch halted)")
         self._publish(QueueStateEvent(paused=True))
+
+    def _maybe_auto_pause_queue_if_idle(self) -> None:
+        """When nothing is queued or in-flight, pause dispatch until ``start_queue()``."""
+        if self._queue_paused:
+            return
+        for j in list_jobs():
+            if j.state in (JobState.QUEUED, JobState.RUNNING):
+                return
+        self.pause_queue()
 
     def is_queue_paused(self) -> bool:
         return self._queue_paused
@@ -379,7 +403,7 @@ class JobBroker:
         # max_concurrent_jobs; the slot is released by the worker on exit.
         # Claiming is serialized through this single thread, so two workers
         # can't pick up the same DB row even though next_queued() itself is
-        # not transactional.
+        # not transactional. Order matches QueueView when sorted by filename.
         while not self._stop.is_set():
             assert self._slots is not None and self._pool is not None
             # Block until a slot frees, but check _stop frequently so shutdown
@@ -397,7 +421,7 @@ class JobBroker:
                 self._wake.wait(timeout=1.0)
                 self._wake.clear()
                 continue
-            job = next_queued()
+            job = next_queued(self._queued_dispatch_order)
             if not job:
                 self._slots.release()
                 self._wake.wait(timeout=1.0)
@@ -529,6 +553,7 @@ class JobBroker:
             job.progress = 1.0
             job.finished_at = _now()
             job.resume_from_stage = None
+            job.current_stage = None
             if ctx.media_info:
                 job.probe = ctx.media_info.model_dump(mode="json")
             update_job(job)
@@ -543,6 +568,7 @@ class JobBroker:
             job.state = JobState.CANCELLED
             job.finished_at = _now()
             job.resume_from_stage = None
+            job.current_stage = None
             update_job(job)
             self._publish(job)
         except AEPError as exc:
@@ -550,6 +576,7 @@ class JobBroker:
             job.error = f"{type(exc).__name__}: {exc}"
             job.finished_at = _now()
             job.last_failed_stage = job.current_stage
+            job.current_stage = None
             update_job(job)
             self._publish(job)
             log.error("job %s failed: %s", job.id, job.error)
@@ -558,10 +585,18 @@ class JobBroker:
             job.error = f"Unhandled: {type(exc).__name__}: {exc}"
             job.finished_at = _now()
             job.last_failed_stage = job.current_stage
+            job.current_stage = None
             update_job(job)
             self._publish(job)
             log.exception("job %s crashed", job.id)
         finally:
+            if job.state in (
+                JobState.COMPLETED,
+                JobState.FAILED,
+                JobState.CANCELLED,
+                JobState.PAUSED,
+            ):
+                self._maybe_auto_pause_queue_if_idle()
             with self._active_lock:
                 self._active.pop(job.id, None)
             # Always detach the per-job log handler, even on crash, so the

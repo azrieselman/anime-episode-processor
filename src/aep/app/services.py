@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from aep.jobs.broker import JobBroker
+from aep.jobs.queue import QueuedDispatchOrder
 from aep.jobs.cleanup import cleanup_job_artifacts
 from aep.jobs.models import Job, JobState
 from aep.jobs.queue import delete_job as _delete_job
@@ -94,6 +95,9 @@ class JobService:
 
     def start_queue(self) -> None:
         self._broker.start_queue()
+
+    def set_queued_dispatch_order(self, order: QueuedDispatchOrder) -> None:
+        self._broker.set_queued_dispatch_order(order)
 
     def pause_queue(self) -> None:
         self._broker.pause_queue()
