@@ -2,7 +2,10 @@
 
 All external-tool invocations go through `run_capture` or `run_streaming`. They:
 
-* Always log the full command line (required by spec).
+* Log the full command line by default (required by spec). Callers may pass
+  ``exec_log_summary`` to ``run_capture`` when argv is intentionally huge (e.g.
+  batched Anime4KCPP ``-i``/``-o`` lists) while still retaining the real argv in
+  ``ProcResult`` for failures.
 * Apply a default timeout (long for media work; callers can override).
 * Use `shell=False` always — paths are passed as a list.
 * Disable inherited stdin and use UTF-8 decoding.
@@ -87,11 +90,12 @@ def run_capture(
     timeout: float | None = 600.0,
     check: bool = True,
     input_text: str | None = None,
+    exec_log_summary: str | None = None,
 ) -> ProcResult:
     """Run a command and capture stdout/stderr fully. Suitable for short tool calls
     (ffprobe, mkvmerge -J, version checks, etc.)."""
     str_cmd = [str(p) for p in cmd]
-    log.info("exec: %s", format_cmd(str_cmd))
+    log.info("exec: %s", exec_log_summary if exec_log_summary is not None else format_cmd(str_cmd))
 
     started = time.monotonic()
     try:

@@ -232,7 +232,12 @@ class Anime4kcppAdapter(NcnnVulkanAdapter):
                 gpu_id=gpu_id,
                 threads=threads,
             )
-            run_capture(argv, env=env, timeout=600.0, check=True)
+            n = len(ins)
+            exec_summary = (
+                f"{argv[0]} -i <{n} paths> -o <{n} paths> "
+                f"-m {model_id} -p {proc_name} -d {gpu_id} -f {float(scale)} -t {threads}"
+            )
+            run_capture(argv, env=env, timeout=600.0, check=True, exec_log_summary=exec_summary)
 
         done_frames = 0
         total = len(frames)
