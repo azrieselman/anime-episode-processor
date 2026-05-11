@@ -62,6 +62,7 @@ AmfQuality = Literal["speed", "balanced", "quality", "high_quality"]
 ContainerName = Literal["mkv", "mp4"]
 ContentClass = Literal["anime_2d", "anime_compressed", "mixed", "auto"]
 DecodeHwaccelMode = Literal["auto", "off", "d3d11va"]
+BatchingMode = Literal["manual", "auto"]
 
 
 class UpscalerCfg(BaseModel):
@@ -397,6 +398,12 @@ class BatchingCfg(BaseModel):
     chunk's frames rather than the whole episode's. Encoded segments per
     chunk are concatenated in the mux stage.
 
+    mode:
+      * auto — choose unbatched vs batched and an effective chunk length from
+        free RAM/scratch space and the planner's frame-byte estimate (see stage
+        01 plan). `chunk_seconds` is the maximum slice target (cap).
+      * manual — use `enabled` and `chunk_seconds` as fixed settings.
+
     boundary_policy:
       * keyframe — snap each batch boundary to the nearest source keyframe
         (≤ target time). Lets decode-serve seek by keyframe without re-decoding
@@ -407,9 +414,14 @@ class BatchingCfg(BaseModel):
         deterministic batch budgeting).
     """
 
+    mode: BatchingMode = Field(
+        default="auto",
+        description="auto: size batches from free scratch/RAM space; manual: use enabled + chunk_seconds.",
+        json_schema_extra=_gui("batching", "simple"),
+    )
     enabled: bool = Field(
         default=True,
-        description="Process long episodes in time chunks to bound ramdisk/intermediate disk usage.",
+        description="manual mode only: when true, time-based batching is on. Ignored for batch decisions in auto mode.",
         json_schema_extra=_gui("batching", "simple"),
     )
     chunk_seconds: int = Field(

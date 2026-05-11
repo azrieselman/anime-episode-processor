@@ -91,7 +91,7 @@ def _build_smoke_preset(preset_id: str = "smoke_e2e") -> Preset:
         upscaler=UpscalerCfg(enabled=False),
         interpolation=InterpolationCfg(enabled=False, target_fps=None),
         postprocess=PostprocessCfg(enabled=False),
-        batching=BatchingCfg(enabled=False),
+        batching=BatchingCfg(mode="manual", enabled=False),
         decode=DecodeCfg(hwaccel="off"),
         encoder=EncoderCfg(
             name="libx264",

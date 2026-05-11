@@ -12,13 +12,19 @@ from __future__ import annotations
 from aep.media.models import FormatInfo, MediaInfo, StreamInfo
 from aep.persist.presets import (
     BatchingCfg,
+    BatchingMode,
     InterpolationCfg,
     PostprocessCfg,
     Preset,
     PresetMeta,
     UpscalerCfg,
 )
-from aep.pipeline.stages.s01_plan import _plan_m3_video_path, _resolve_decode_hwaccel
+from aep.pipeline.stages.s01_plan import (
+    _apply_encode_input_mode,
+    _compute_encode_input_mode,
+    _plan_m3_video_path,
+    _resolve_decode_hwaccel,
+)
 
 # ---------- fixtures -------------------------------------------------------
 
@@ -66,6 +72,7 @@ def _make_preset(
     pp_deband: bool = False,
     pp_grain: int = 0,
     batching_enabled: bool = False,
+    batching_mode: BatchingMode = "auto",
 ) -> Preset:
     return Preset(
         meta=PresetMeta(id="test", name="Test"),
@@ -85,7 +92,7 @@ def _make_preset(
         postprocess=PostprocessCfg(
             enabled=pp_enabled, deband=pp_deband, grain_addback=pp_grain,
         ),
-        batching=BatchingCfg(enabled=batching_enabled),
+        batching=BatchingCfg(mode=batching_mode, enabled=batching_enabled),
     )
 
 
@@ -99,11 +106,16 @@ def test_batching_enabled_forces_frames_mode() -> None:
         interp_enabled=False,
         pp_enabled=False,
         batching_enabled=True,
+        batching_mode="manual",
     )
-    plan, _w, rationale = _plan_m3_video_path(preset, media, primary)
+    plan, _w, _rationale = _plan_m3_video_path(preset, media, primary)
+    assert plan["encode_input_mode"] == "source"
+    enc = _compute_encode_input_mode(plan, preset, batch_count=2)
+    _apply_encode_input_mode(
+        plan, preset, media, primary, _resolve_decode_hwaccel("off"), enc,
+    )
     assert plan["encode_input_mode"] == "frames"
     assert plan["decode"]["active"] is True
-    assert any("batching" in r for r in rationale)
 
 
 def test_all_disabled_picks_source_mode() -> None:
