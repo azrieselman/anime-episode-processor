@@ -221,6 +221,29 @@ class PipelineRunner:
         ctx.plan.setdefault("decode", {})
         segments_dir = ctx.workdir / "batch_segments"
         segments_dir.mkdir(parents=True, exist_ok=True)
+
+        # Resume support: if a prior run already completed some batches, their
+        # encoded segments persist under <workdir>/batch_segments/. A resumed
+        # job reconstructs a fresh PipelineContext, so rehydrate ctx.encoded_segments
+        # from disk up front; otherwise stage 09 would concatenate only the
+        # segments produced after the resume point, truncating output and
+        # causing validation failures.
+        recovered_segments = sorted(
+            p
+            for p in segments_dir.glob("segment_*.mkv")
+            if p.is_file() and p.stat().st_size > 0
+        )
+        if recovered_segments and not ctx.encoded_segments:
+            ctx.encoded_segments = list(recovered_segments)
+        elif recovered_segments:
+            # De-dup in case caller/stage already populated some paths.
+            seen = {p.resolve() for p in ctx.encoded_segments if isinstance(p, Path)}
+            for p in recovered_segments:
+                rp = p.resolve()
+                if rp not in seen:
+                    ctx.encoded_segments.append(p)
+                    seen.add(rp)
+
         per_batch_to_run = [
             s for s in per_batch
             if resume_index is None or self._stage_index(s.name) >= resume_index
@@ -253,6 +276,12 @@ class PipelineRunner:
             and not any(s.name == "04_decode_serve" for s in per_batch_to_run)
         ):
             start_batch_idx = self._infer_resume_batch_index(ctx)
+        # If we already have completed segments, skip those batches entirely.
+        # This matters when resuming mid-batch with resume_from_stage set to a
+        # per-batch stage: without this, we'd re-run batch 0..N and potentially
+        # overwrite segments, or worse, omit earlier segments from ctx.encoded_segments.
+        if ctx.encoded_segments:
+            start_batch_idx = max(start_batch_idx, len(ctx.encoded_segments))
 
         for batch in batches:
             if batch.index < start_batch_idx:

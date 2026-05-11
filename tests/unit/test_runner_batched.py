@@ -231,6 +231,51 @@ def test_mid_batch_failure_clears_active_batch(
     assert ctx.encoded_segments[0].name == "segment_00.mkv"
 
 
+def test_resume_rehydrates_prior_segments_and_skips_completed_batches(
+    tmp_runtime: Path, tmp_path: Path,
+) -> None:
+    """Resuming a batched job must not drop already-encoded segments.
+
+    Historically, a resumed run built a fresh PipelineContext with an empty
+    `encoded_segments` list, so stage 09 concatenation would see only the
+    post-resume segments and produce a truncated output (caught by validate).
+    """
+    init_db()
+    ramdisk = tmp_path / "ram"
+    ctx = _ctx_with_ramdisk(tmp_path, ramdisk)
+    ctx.plan = {"batches": _batch_plan((0.0, 30.0), (30.0, 60.0), (60.0, 90.0))}
+
+    # Simulate a prior run that already produced batch 0's segment.
+    seg_dir = ctx.workdir / "batch_segments"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    (seg_dir / "segment_00.mkv").write_bytes(b"done0")
+
+    # Resume from 08_encode: runner should skip earlier stages (04_decode_serve)
+    # and also skip already completed batches (batch 0), while rehydrating
+    # encoded_segments from disk.
+    ctx.extras["resume_from_stage"] = "08_encode"
+
+    decode = _NamedStage("04_decode_serve")
+    encode = _NamedStage("08_encode")
+    runner = PipelineRunner([decode, encode])
+    runner.run(ctx, EventSink())
+
+    # decode should be skipped for the resumed batch (batch 0), but the runner
+    # intentionally restores the full per-batch chain for subsequent batches.
+    assert [c[0] for c in decode.calls] == [1, 2]
+    # encode should run only for remaining batches (1 and 2).
+    assert [c[0] for c in encode.calls] == [1, 2]
+
+    # All segments should be present in order (0 recovered + 1,2 produced).
+    assert [p.name for p in ctx.encoded_segments] == [
+        "segment_00.mkv",
+        "segment_01.mkv",
+        "segment_02.mkv",
+    ]
+    for seg in ctx.encoded_segments:
+        assert seg.exists() and seg.stat().st_size > 0
+
+
 def test_malformed_batch_plan_fails_fast(
     tmp_runtime: Path, tmp_path: Path,
 ) -> None:
