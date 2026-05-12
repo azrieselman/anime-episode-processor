@@ -47,8 +47,8 @@ aep-gui
 ### Running the test suite
 
 ```powershell
-pytest tests/unit -q                # 349 unit tests, all should pass
-ruff check src tests                # the beta-1 baseline must stay clean
+pytest tests/unit -q                # unit tests; all should pass
+ruff check src tests                # must stay clean before tagging a release
 mypy                                 # informational; --strict is post-beta cleanup
 ```
 
@@ -68,7 +68,7 @@ Output:
 
 * `dist\aep-gui\` — the one-folder bundle (run `aep-gui.exe` directly to
   verify it works without re-installing).
-* `dist\AEP-Setup-1.0.0-beta1.exe` — the Inno Setup installer.
+* `dist\AEP-Setup-1.0.0-beta2.exe` — the Inno Setup installer.
 
 ### Re-running just the installer step
 
@@ -105,10 +105,10 @@ binaries, or any model weights. Those are downloaded into
 
 ## Code signing (post-beta)
 
-Beta-1 ships unsigned. End users will see a SmartScreen prompt the first
+Beta builds ship unsigned. End users will see a SmartScreen prompt the first
 time they run the installer; "More info → Run anyway" works fine. Code
 signing is tracked as post-beta cleanup — it requires a paid certificate
-and a CI signing pipeline that's beyond the scope of beta-1.
+and a CI signing pipeline that's beyond the scope of public betas.
 
 ## Troubleshooting
 

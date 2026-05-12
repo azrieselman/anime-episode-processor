@@ -9,10 +9,48 @@ the first publicly distributed build.
 
 ## [Unreleased]
 
-Development has started for `1.0.0-beta2`.
+## [1.0.0-beta2] — 2026-05-11
+
+Second public beta. Focus on queue UX, tooling verification, decode/encode
+robustness, duplicate-frame handling in the frame pipeline, and batched-job
+resume correctness.
+
+### Added
+
+- **Perceptual duplicate-frame path**: decode can compact near-duplicate frames
+  for downstream NCNN stages; upscale/interpolate expand back so the encoded
+  timeline matches the full decoded frame count (FFmpeg `select` scene scores +
+  metadata, no hard dependency on the optional `scenedetect` lavfi filter).
+- **Help → Check for Updates**: queries GitHub releases (including prereleases)
+  and compares versions with the installed build.
+- **Verify Tools** dialog and related first-run tooling checks.
+- **Settings**: toggle to show or hide the queue **Job ID** column.
+- **Planning**: automatic batch chunk sizing from free scratch-disk and RAM-disk
+  headroom (when configured).
 
 ### Changed
-- Bumped project version to `1.0.0b2.dev0` to mark post-`1.0.0-beta1` development.
+
+- **Queue**: job dispatch order matches the queue table’s filename sort.
+- **Queue**: pausing waits for the worker to halt cooperatively before the UI
+  proceeds.
+- **GUI**: refreshed application window icon.
+- **Decode / encode**: more robust FFmpeg invocation, hardware-accel probing,
+  and fallback behavior; scene-detect and encode-stage tweaks for reliability.
+- **Anime4KCPP**: optional truncated argv/exec logging for huge command lines.
+
+### Fixed
+
+- **Batched pipeline**: rehydrate per-segment metadata on resume so the validate
+  stage no longer fails after an interrupted batched run.
+
+### Known limitations (unchanged from beta-1)
+
+- `02_sample_bench` real implementation (smart auto-tuning) — post-beta.
+- `av1_nvenc` → `hevc_nvenc` automatic fallback on encode failure.
+- macOS / Linux ports.
+- Out-of-process worker broker (the service layer is already abstracted for
+  the eventual move; today everything runs in-process).
+- Code-signed Windows installer.
 
 ## [1.0.0-beta1] — 2026-05-08
 
@@ -66,4 +104,5 @@ first-run tools fetcher.
 - Code-signed Windows installer.
 
 [1.0.0-beta1]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta1
-[Unreleased]: https://github.com/azrieselman/anime-episode-processor/compare/v1.0.0-beta1...HEAD
+[1.0.0-beta2]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta2
+[Unreleased]: https://github.com/azrieselman/anime-episode-processor/compare/v1.0.0-beta2...HEAD

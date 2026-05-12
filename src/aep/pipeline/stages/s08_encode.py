@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 from aep.adapters.ffmpeg import FFmpegAdapter, decode_hwaccel_has_sw_fallback, raise_if_failed
-from aep.encode.encoders import EncodeBuildResult, build_encoder_args, _is_10bit_pix_fmt
+from aep.encode.encoders import EncodeBuildResult, _is_10bit_pix_fmt, build_encoder_args
 from aep.errors import CancelledError, EncodeError, PausedError, PipelineError
 from aep.persist.presets import EncoderCfg
 from aep.pipeline.cache import compute_cache_key
