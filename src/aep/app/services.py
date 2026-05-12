@@ -75,8 +75,17 @@ class JobService:
     def __init__(self, broker: JobBroker) -> None:
         self._broker = broker
 
-    def enqueue(self, source: Path, preset_id: str, *, output: Path | None = None) -> Job:
-        return self._broker.enqueue(source, preset_id, output_path=output)
+    def enqueue(
+        self,
+        source: Path,
+        preset_id: str,
+        *,
+        output: Path | None = None,
+        preset_overrides: dict[str, Any] | None = None,
+    ) -> Job:
+        return self._broker.enqueue(
+            source, preset_id, output_path=output, preset_overrides=preset_overrides,
+        )
 
     def preview_output_path(
         self, source: Path, preset_id: str, *, output: Path | None = None,

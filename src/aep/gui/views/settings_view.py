@@ -124,6 +124,7 @@ class SettingsView(QWidget):
         self._decode_hwaccel.addItem("Auto (D3D11VA on Windows)", "auto")
         self._decode_hwaccel.addItem("Off (software decode)", "off")
         self._decode_hwaccel.addItem("DirectX D3D11VA", "d3d11va")
+        self._decode_hwaccel.addItem("NVIDIA NVDEC (CUDA)", "cuda")
         hf.addRow("Decode acceleration:", self._decode_hwaccel)
         self._max_jobs = QSpinBox()
         self._max_jobs.setRange(1, 4)

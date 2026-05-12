@@ -45,7 +45,20 @@ def _cmd_presets(_: argparse.Namespace) -> int:
 def _cmd_enqueue(args: argparse.Namespace) -> int:
     services = bootstrap()
     try:
-        job = services.jobs.enqueue(Path(args.path), args.preset)
+        overrides: dict | None = None
+        if getattr(args, "frame_dedupe", False):
+            overrides = {
+                "frame_dedupe": {
+                    "enabled": True,
+                    "threshold": float(args.frame_dedupe_threshold),
+                    "protect_scene_cuts": not bool(args.frame_dedupe_no_scene_protect),
+                },
+            }
+        job = services.jobs.enqueue(
+            Path(args.path),
+            args.preset,
+            preset_overrides=overrides,
+        )
         print(json.dumps({"job_id": job.id, "state": job.state.value}, indent=2))
         return 0
     finally:
@@ -75,6 +88,22 @@ def main(argv: list[str] | None = None) -> int:
     pe = sub.add_parser("enqueue")
     pe.add_argument("path")
     pe.add_argument("--preset", default="anime_balanced")
+    pe.add_argument(
+        "--frame-dedupe",
+        action="store_true",
+        help="Enable perceptual frame dedupe (ffmpeg scene scores) for this job.",
+    )
+    pe.add_argument(
+        "--frame-dedupe-threshold",
+        type=float,
+        default=0.02,
+        help="Scene score below this marks a duplicate (default 0.02).",
+    )
+    pe.add_argument(
+        "--frame-dedupe-no-scene-protect",
+        action="store_true",
+        help="Allow skipping frames adjacent to scene cuts (default: protect them).",
+    )
     pe.set_defaults(func=_cmd_enqueue)
 
     sub.add_parser("list").set_defaults(func=_cmd_list)

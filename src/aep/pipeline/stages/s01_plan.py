@@ -286,6 +286,9 @@ class PlanStage(BaseStage):
             "output_fps": m3_plan["output_fps"],
             "encode_input_source": m3_plan["encode_input_source"],
             "pipeline_order": m3_plan["pipeline_order"],
+            "frame_dedupe": _plan_frame_dedupe_section(
+                preset, m3_plan, encode_input_mode=encode_input_mode,
+            ),
             "video_path": {
                 "warnings": m3_warnings,
                 "rationale": m3_rationale,
@@ -460,6 +463,42 @@ def _output_fps_numeric(m3_plan: dict[str, Any]) -> float | None:
         return None
 
 
+def _output_fps_for_batch_planning(
+    *,
+    m3_plan: dict[str, Any],
+    primary,
+    duration_s: float,
+    ramdisk_estimate: int,
+    bytes_per_frame: int,
+) -> float | None:
+    """Numeric output FPS for per-batch frame counts and ``est_bytes``.
+
+    When ``m3_plan['output_fps']`` is unset (e.g. ffprobe did not yield a usable
+    frame rate but ``nb_frames`` still allowed ``_estimate_frame_bytes`` to run),
+    :func:`plan_batches` would see zero frames per chunk and zero ``est_bytes``,
+    so auto chunk sizing always picked ``chunk_seconds`` as the cap — ignoring
+    free scratch space.  Derive a rate from the same byte estimate the planner
+    already computed (includes interpolation multiplier) before falling back to
+    raw stream metadata.
+    """
+    out = _output_fps_numeric(m3_plan)
+    if out is not None and out > 0:
+        return out
+    if (
+        duration_s > 0
+        and ramdisk_estimate > 0
+        and bytes_per_frame > 0
+    ):
+        implied = (ramdisk_estimate / float(bytes_per_frame)) / float(duration_s)
+        if implied > 0:
+            return implied
+    if primary is not None:
+        rate = parse_rational(primary.avg_frame_rate) or parse_rational(primary.r_frame_rate)
+        if rate is not None and float(rate) > 0:
+            return float(rate)
+    return None
+
+
 def _bytes_per_output_frame(
     *,
     primary,
@@ -565,6 +604,31 @@ def _search_largest_chunk_seconds(
     return None
 
 
+def _plan_frame_dedupe_section(
+    preset: Preset,
+    m3_plan: dict[str, Any],
+    *,
+    encode_input_mode: str,
+) -> dict[str, Any]:
+    """Planner-only frame-dedupe flags; runtime fills counts/kept_order after decode."""
+    cfg = preset.frame_dedupe
+    vs = (m3_plan.get("upscale") or {}).get("engine") == "anime4kcpp-vs"
+    upscale_on = bool((m3_plan.get("upscale") or {}).get("active"))
+    interp_on = bool((m3_plan.get("interpolate") or {}).get("active"))
+    savings_path = upscale_on or interp_on
+    active = (
+        bool(cfg.enabled)
+        and encode_input_mode == "frames"
+        and savings_path
+        and not vs
+    )
+    return {
+        "active": active,
+        "threshold": float(cfg.threshold),
+        "protect_scene_cuts": bool(cfg.protect_scene_cuts),
+    }
+
+
 def _compute_encode_input_mode(
     m3_plan: dict[str, Any],
     preset: Preset,
@@ -638,12 +702,18 @@ def _plan_video_batches(
         meta["auto_unbatched_reason"] = "duration_unknown"
         return [], meta
 
-    output_fps = _output_fps_numeric(m3_plan)
     bytes_per_frame = _bytes_per_output_frame(
         primary=primary,
         target_w=target_w,
         target_h=target_h,
         m3_plan=m3_plan,
+    )
+    output_fps = _output_fps_for_batch_planning(
+        m3_plan=m3_plan,
+        primary=primary,
+        duration_s=float(duration),
+        ramdisk_estimate=ramdisk_estimate,
+        bytes_per_frame=bytes_per_frame,
     )
 
     keyframes: list[float] = []
@@ -1047,4 +1117,6 @@ def _resolve_decode_hwaccel(mode: str) -> str:
         return "off"
     if m == "d3d11va":
         return "d3d11va"
+    if m == "cuda":
+        return "cuda"
     return "d3d11va" if os.name == "nt" else "off"

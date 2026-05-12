@@ -9,6 +9,8 @@ from tempfile import TemporaryDirectory
 from aep.encode.scene_detect import (
     SceneCut,
     cuts_to_frame_indices,
+    parse_scdet_log,
+    scdet_timestr_to_seconds,
 )
 from aep.pipeline.context import PipelineContext
 from aep.pipeline.events import EventSink
@@ -48,6 +50,38 @@ def test_map_legacy_threshold_keeps_explicit_pyscenedetect_value() -> None:
     assert _map_legacy_threshold(30.0) == 30.0
 
 
+# ---------------------------------------------------------- ffmpeg scdet parsing
+
+
+def test_scdet_timestr_plain_seconds() -> None:
+    assert scdet_timestr_to_seconds("1.500000") == 1.5
+
+
+def test_scdet_timestr_hms() -> None:
+    assert abs(scdet_timestr_to_seconds("0:01:30.500000") - 90.5) < 1e-9
+
+
+def test_scdet_timestr_ms() -> None:
+    assert abs(scdet_timestr_to_seconds("1:30.25") - 90.25) < 1e-9
+
+
+def test_parse_scdet_log_with_ffmpeg_prefix() -> None:
+    text = (
+        "foo\n"
+        "[Parsed_scdet_0 @ 0xdeadbeef] lavfi.scd.score: 12.300, lavfi.scd.time: 2.000000\n"
+        "bar\n"
+    )
+    assert parse_scdet_log(text) == [(12.3, 2.0)]
+
+
+def test_parse_scdet_log_multiple_lines() -> None:
+    text = (
+        "lavfi.scd.score: 10.000, lavfi.scd.time: 0:00:01.000000\n"
+        "lavfi.scd.score: 11.000, lavfi.scd.time: 3.500000\n"
+    )
+    assert parse_scdet_log(text) == [(10.0, 1.0), (11.0, 3.5)]
+
+
 # ---------------------------------------------------------- report compatibility
 
 
@@ -62,6 +96,8 @@ def test_write_report_shape_compatible() -> None:
             total_frames=1000,
             raw_count=2,
             active=True,
+            scene_detect_backend="pyscenedetect",
+            scene_change_threshold_percent=10.0,
         )
         payload = json.loads(out.read_text(encoding="utf-8"))
     assert set(payload.keys()) == {
@@ -71,6 +107,8 @@ def test_write_report_shape_compatible() -> None:
         "total_frames",
         "raw_cut_count",
         "frame_indices",
+        "scene_detect_backend",
+        "scene_change_threshold_percent",
     }
     assert payload["frame_indices"] == [24, 96]
 

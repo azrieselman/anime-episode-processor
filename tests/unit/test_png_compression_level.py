@@ -141,6 +141,19 @@ def test_decode_hwaccel_flags_on_decode_to_frames(tmp_path: Path) -> None:
     assert cmd[idx + 1] == "d3d11va"
 
 
+def test_decode_hwaccel_cuda_on_decode_to_frames(tmp_path: Path) -> None:
+    ff = FFmpegAdapter()
+    cmd = [str(c) for c in ff.build_decode_to_frames(
+        source=tmp_path / "in.mkv",
+        out_dir=tmp_path / "out",
+        frame_format="png",
+        decode_hwaccel="cuda",
+    )]
+    assert "-hwaccel" in cmd
+    idx = cmd.index("-hwaccel")
+    assert cmd[idx + 1] == "cuda"
+
+
 def test_decode_hwaccel_flags_on_passthrough_encode(tmp_path: Path) -> None:
     ff = FFmpegAdapter()
     cmd = [str(c) for c in ff.build_passthrough_video_encode(
@@ -152,3 +165,46 @@ def test_decode_hwaccel_flags_on_passthrough_encode(tmp_path: Path) -> None:
     assert "-hwaccel" in cmd
     idx = cmd.index("-hwaccel")
     assert cmd[idx + 1] == "d3d11va"
+
+
+def test_decode_hwaccel_cuda_on_passthrough_encode(tmp_path: Path) -> None:
+    ff = FFmpegAdapter()
+    cmd = [str(c) for c in ff.build_passthrough_video_encode(
+        source=tmp_path / "in.mkv",
+        video_only_out=tmp_path / "out.mkv",
+        encoder_args=["-c:v", "libx264"],
+        decode_hwaccel="cuda",
+    )]
+    assert "-hwaccel" in cmd
+    idx = cmd.index("-hwaccel")
+    assert cmd[idx + 1] == "cuda"
+
+
+def test_fused_decode_emits_filter_complex_and_dual_maps(tmp_path: Path) -> None:
+    """Fused decode+scene metadata must mirror decode preprocess + scan in one graph."""
+    from aep.util.frame_dedupe import SCENE_SCORE_META_BASENAME
+
+    ff = FFmpegAdapter()
+    meta = tmp_path / SCENE_SCORE_META_BASENAME
+    cmd = [str(c) for c in ff.build_decode_to_frames_with_scene_metadata_fused(
+        source=tmp_path / "in.mkv",
+        out_dir=tmp_path / "frames",
+        metadata_out=meta,
+        frame_format="png",
+        start_pts=1.0,
+        end_pts=3.0,
+    )]
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert "[0:v]" in fc and "[rgb]" in fc
+    assert "split[enc][scn]" in fc
+    assert f"metadata=print:file={SCENE_SCORE_META_BASENAME}" in fc
+    assert "select=gt(scene+1" in fc
+    assert cmd.count("-map") >= 2
+    assert "-map" in cmd and "[enc]" in cmd and "[meta]" in cmd
+    assert cmd[-3:] == ["-f", "null", "-"]
+    ss_idx = cmd.index("-ss")
+    i_idx = cmd.index("-i")
+    assert ss_idx < i_idx
+    t_idx = cmd.index("-t")
+    assert t_idx > i_idx
+    assert cmd[t_idx + 1].startswith("2.")

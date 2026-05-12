@@ -340,24 +340,15 @@ class FFmpegAdapter(ToolAdapter):
         # Filter chain: optional resize, then colorspace normalization, then
         # explicit pix-fmt to RGB so the encoder is forced to 8-bit. zscale is
         # used over scale because it correctly handles BT.2020/PQ → BT.709 SDR.
-        vf_parts: list[str] = []
-        if target_width and target_height:
-            vf_parts.append(
-                f"scale={target_width}:{target_height}:flags=bicubic"
-            )
-        if bt709_normalize:
-            # zscale needs libzimg; many minimal Windows builds omit it. For
-            # 8-bit SDR sources (see s04 + plan hdr) we only need rgb24; reserve
-            # zscale for 10-bit / HDR where gamut/transfer mapping matters.
-            if use_zscale:
-                vf_parts.append(
-                    "zscale=t=bt709:m=bt709:p=bt709:r=limited,format=rgb24"
-                )
-            else:
-                vf_parts.append("format=rgb24")
-        else:
-            vf_parts.append("format=rgb24")
-        cmd += ["-vf", ",".join(vf_parts)]
+        cmd += [
+            "-vf",
+            _decode_preprocess_vf_inner(
+                target_width=target_width,
+                target_height=target_height,
+                bt709_normalize=bt709_normalize,
+                use_zscale=use_zscale,
+            ),
+        ]
 
         # Per-format encoder flags.
         if frame_format == "png":
@@ -377,6 +368,146 @@ class FFmpegAdapter(ToolAdapter):
         cmd += ["-start_number", str(start_number)]
         out_pattern = out_dir / f"%0{digits}d.{ext}"
         cmd += [str(out_pattern)]
+        return cmd
+
+    def build_decode_to_frames_with_scene_metadata_fused(
+        self,
+        *,
+        source: Path,
+        out_dir: Path,
+        metadata_out: Path,
+        frame_format: str = "png",
+        webp_lossless: bool = True,
+        png_compression: int | None = None,
+        target_width: int | None = None,
+        target_height: int | None = None,
+        bt709_normalize: bool = True,
+        use_zscale: bool = True,
+        start_number: int = 1,
+        digits: int = 8,
+        allow_overwrite: bool = True,
+        decode_hwaccel: str = "off",
+        start_pts: float | None = None,
+        end_pts: float | None = None,
+    ) -> list[str | Path]:
+        """Single decode: frame files + ``metadata=print`` scene scores via ``filter_complex``.
+
+        One decode feeds ``split``: branch (1) matches ``build_decode_to_frames`` output;
+        branch (2) matches ``build_scene_score_scan`` (``select`` + ``metadata=print``).
+        Run with ``cwd=metadata_out.parent`` so ``metadata_out.name`` is basename-only.
+
+        If ffmpeg rejects the graph, the caller falls back to decode + scan separately.
+        """
+        if frame_format not in ("png", "webp"):
+            raise ValueError(f"frame_format must be png or webp, got {frame_format!r}")
+        from aep.constants import PNG_COMPRESSION_LEVEL
+        if png_compression is None:
+            png_compression = PNG_COMPRESSION_LEVEL
+
+        meta_name = metadata_out.name
+        if not meta_name or "/" in meta_name or "\\" in meta_name:
+            raise ValueError(
+                "build_decode_to_frames_with_scene_metadata_fused: metadata_out must be "
+                "a filename with no path separators (caller sets cwd to its parent)",
+            )
+
+        prep = _decode_preprocess_vf_inner(
+            target_width=target_width,
+            target_height=target_height,
+            bt709_normalize=bt709_normalize,
+            use_zscale=use_zscale,
+        )
+        fc = (
+            f"[0:v]{prep}[rgb];"
+            f"[rgb]split[enc][scn];"
+            f"[scn]select=gt(scene+1\\,0),metadata=print:file={meta_name}[meta]"
+        )
+
+        cmd: list[str | Path] = [
+            self.command_executable(),
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel", "error",
+        ]
+        cmd += ["-y"] if allow_overwrite else ["-n"]
+        if start_pts is not None and start_pts > 0:
+            cmd += ["-ss", f"{start_pts:.6f}"]
+        cmd += _decode_input_args(str(source), decode_hwaccel=decode_hwaccel)
+        cmd += ["-map", "0:v:0"]
+        if end_pts is not None:
+            duration = end_pts - (start_pts or 0.0)
+            if duration > 0:
+                cmd += ["-t", f"{duration:.6f}"]
+        cmd += ["-filter_complex", fc]
+        cmd += ["-map", "[enc]", "-an", "-sn", "-dn"]
+        if frame_format == "png":
+            cmd += ["-c:v", "png", "-compression_level", str(png_compression)]
+            ext = "png"
+        else:
+            cmd += ["-c:v", "libwebp"]
+            if webp_lossless:
+                cmd += ["-lossless", "1", "-compression_level", "6"]
+            else:
+                cmd += ["-quality", "95"]
+            ext = "webp"
+        cmd += ["-start_number", str(start_number)]
+        out_pattern = out_dir / f"%0{digits}d.{ext}"
+        cmd += [str(out_pattern)]
+        cmd += ["-map", "[meta]", "-an", "-sn", "-dn", "-f", "null", "-"]
+        return cmd
+
+    def build_scene_score_scan(
+        self,
+        *,
+        source: Path,
+        metadata_out: Path,
+        decode_hwaccel: str = "off",
+        start_pts: float | None = None,
+        end_pts: float | None = None,
+    ) -> list[str | Path]:
+        """Decode video to null while recording per-frame scene scores to ``metadata_out``.
+
+        Uses the **select** filter's ``scene`` statistic (same idea as
+        ``select='gt(scene,THRESHOLD)'`` in the ffmpeg docs). ``select`` stores the
+        score in frame metadata as ``lavfi.scene_score``; **showinfo does not print
+        that metadata**, so we chain **metadata=print:file=...** and parse the sidecar
+        file (see ``aep.util.frame_dedupe.parse_metadata_print_scene_scores``).
+
+        ``metadata_out`` must be a **basename-only** path segment (no directories):
+        the caller runs ffmpeg with ``cwd=metadata_out.parent`` so Windows drive
+        letters and ``:`` in paths do not break the ``-vf`` option parser.
+
+        Mirrors ``build_decode_to_frames`` input timing (``-ss`` before ``-i``, ``-t``)
+        so batch windows match decode-serve.
+        """
+        cmd: list[str | Path] = [
+            self.command_executable(),
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel", "info",
+            "-y",
+        ]
+        if start_pts is not None and start_pts > 0:
+            cmd += ["-ss", f"{start_pts:.6f}"]
+        cmd += _decode_input_args(str(source), decode_hwaccel=decode_hwaccel)
+        cmd += ["-map", "0:v:0"]
+        if end_pts is not None:
+            duration = end_pts - (start_pts or 0.0)
+            if duration > 0:
+                cmd += ["-t", f"{duration:.6f}"]
+        meta_name = metadata_out.name
+        if not meta_name or "/" in meta_name or "\\" in meta_name:
+            raise ValueError(
+                "build_scene_score_scan: metadata_out must be a filename in cwd "
+                "(no path separators); pass e.g. parent / 'aep_frame_dedupe_scene.txt'",
+            )
+        # Comma inside select expr separates filters — escape it (see ffmpeg select examples).
+        cmd += [
+            "-vf", f"select=gt(scene+1\\,0),metadata=print:file={meta_name}",
+            "-an", "-sn", "-dn",
+            "-f", "null",
+            "-",
+        ]
         return cmd
 
     def build_encode_from_frames(
@@ -464,11 +595,45 @@ def raise_if_failed(returncode: int, stderr_tail: str) -> None:
         )
 
 
+def _decode_preprocess_vf_inner(
+    *,
+    target_width: int | None,
+    target_height: int | None,
+    bt709_normalize: bool,
+    use_zscale: bool,
+) -> str:
+    """Comma-separated vf chain (no ``-vf`` / brackets) matching decode-to-frames color path."""
+    parts: list[str] = []
+    if target_width and target_height:
+        parts.append(f"scale={target_width}:{target_height}:flags=bicubic")
+    if bt709_normalize:
+        if use_zscale:
+            parts.append("zscale=t=bt709:m=bt709:p=bt709:r=limited,format=rgb24")
+        else:
+            parts.append("format=rgb24")
+    else:
+        parts.append("format=rgb24")
+    return ",".join(parts)
+
+
+# Decode modes that may fail at runtime (driver / build / source); stages retry with software decode.
+DECODE_HWACCEL_WITH_SW_FALLBACK = frozenset({"d3d11va", "cuda"})
+
+
+def decode_hwaccel_has_sw_fallback(decode_hwaccel: str) -> bool:
+    return (decode_hwaccel or "off").lower() in DECODE_HWACCEL_WITH_SW_FALLBACK
+
+
 def _decode_input_args(source: str, *, decode_hwaccel: str) -> list[str]:
     mode = (decode_hwaccel or "off").lower()
     if mode == "d3d11va":
         return [
             "-hwaccel", "d3d11va",
+            "-i", source,
+        ]
+    if mode == "cuda":
+        return [
+            "-hwaccel", "cuda",
             "-i", source,
         ]
     return ["-i", source]

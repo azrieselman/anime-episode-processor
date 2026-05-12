@@ -23,8 +23,8 @@ import logging
 import time
 from pathlib import Path
 
-from aep.adapters.ffmpeg import FFmpegAdapter, raise_if_failed
-from aep.encode.encoders import build_encoder_args
+from aep.adapters.ffmpeg import FFmpegAdapter, decode_hwaccel_has_sw_fallback, raise_if_failed
+from aep.encode.encoders import EncodeBuildResult, build_encoder_args, _is_10bit_pix_fmt
 from aep.errors import CancelledError, EncodeError, PausedError, PipelineError
 from aep.persist.presets import EncoderCfg
 from aep.pipeline.cache import compute_cache_key
@@ -34,6 +34,59 @@ from aep.pipeline.stage import BaseStage, StagePlan, StageResult
 from aep.util.proc import ProcError, ProcInterrupted, ProcResult, run_capture, run_streaming
 
 log = logging.getLogger(__name__)
+
+
+def nvenc_relaxed_strategies(
+    cfg: EncoderCfg, *, source_is_10bit: bool,
+) -> list[tuple[EncoderCfg, str | None]]:
+    """Ordered NVENC attempts: preset first, then safer multipass/AQ, then 8-bit.
+
+    Some driver/GPU combinations reject ``-multipass fullres``, temporal AQ,
+    or 10-bit Main10 output; later entries relax those knobs while keeping the
+    same codec (``hevc_nvenc`` / ``h264_nvenc`` / ``av1_nvenc``).
+
+    The second tuple element, when set, overrides ``source_pix_fmt`` passed to
+    ``build_encoder_args`` (e.g. ``\"yuv420p\"`` forces 8-bit output).
+    """
+    if not cfg.name.endswith("_nvenc"):
+        return [(cfg, None)]
+
+    strategies: list[tuple[EncoderCfg, str | None]] = []
+    seen: set[tuple[object, ...]] = set()
+
+    def _fingerprint(c: EncoderCfg, pix_override: str | None) -> tuple[object, ...]:
+        return (
+            c.name,
+            c.nvenc_multipass,
+            int(c.nvenc_temporal_aq),
+            int(c.nvenc_spatial_aq),
+            c.nvenc_b_ref_mode,
+            c.nvenc_bframes,
+            pix_override,
+        )
+
+    def push(c: EncoderCfg, pix_override: str | None) -> None:
+        key = _fingerprint(c, pix_override)
+        if key not in seen:
+            seen.add(key)
+            strategies.append((c, pix_override))
+
+    push(cfg, None)
+    if cfg.nvenc_multipass == "fullres":
+        push(cfg.model_copy(update={"nvenc_multipass": "qres"}), None)
+    if cfg.nvenc_multipass in ("fullres", "qres"):
+        push(cfg.model_copy(update={"nvenc_multipass": "disabled"}), None)
+    if cfg.nvenc_temporal_aq:
+        push(
+            cfg.model_copy(update={"nvenc_multipass": "disabled", "nvenc_temporal_aq": False}),
+            None,
+        )
+    if source_is_10bit and cfg.name in ("hevc_nvenc", "av1_nvenc"):
+        push(
+            cfg.model_copy(update={"nvenc_multipass": "disabled", "nvenc_temporal_aq": False}),
+            "yuv420p",
+        )
+    return strategies
 
 
 class EncodeStage(BaseStage):
@@ -106,16 +159,6 @@ class EncodeStage(BaseStage):
         if isinstance(target_h, int) and target_h <= 0:
             target_h = None
 
-        build = build_encoder_args(
-            cfg,
-            target_width=target_w if isinstance(target_w, int) else None,
-            target_height=target_h if isinstance(target_h, int) else None,
-            source_pix_fmt=primary.pix_fmt if primary else None,
-            fps_mode="passthrough",
-        )
-        for r in build.rationale:
-            events.emit(StageEvent(ctx.job_id, self.name, "log", message=r))
-
         out_path: Path = plan.outputs[0]
         mode = str(plan.params.get("mode", "source"))
         decode_hwaccel = str(plan.params.get("decode_hwaccel", "off"))
@@ -136,66 +179,125 @@ class EncodeStage(BaseStage):
                     f"08_encode: invalid pts_window {pts_window!r}"
                 ) from exc
 
-        gp = list(build.global_prefix) if build.global_prefix else None
-        if mode == "frames":
-            cmd = self._build_frames_cmd(ctx, plan, out_path, build_args=build.args, global_prefix=gp)
-        else:
-            cmd = self._ffmpeg.build_passthrough_video_encode(
-                source=ctx.source_path,
-                video_only_out=out_path,
-                encoder_args=build.args,
-                decode_hwaccel=decode_hwaccel,
-                progress=False,
-                allow_overwrite=True,
-                start_pts=start_pts,
-                end_pts=end_pts,
-                global_prefix=gp,
-            )
+        tw = target_w if isinstance(target_w, int) else None
+        th = target_h if isinstance(target_h, int) else None
+        source_pix = primary.pix_fmt if primary else None
+        source_is_10bit = _is_10bit_pix_fmt(source_pix)
+        strategies = nvenc_relaxed_strategies(cfg, source_is_10bit=source_is_10bit)
 
         events.emit(StageEvent(
             ctx.job_id, self.name, "started",
             message=f"encoding ({mode}) with {cfg.name} → {out_path.name}",
         ))
 
-        try:
-            stderr_lines: list[str] = []
-            for stream, line in run_streaming(
-                cmd,
-                should_interrupt=lambda: "cancel" if ctx.cancel_event.is_set() else (
-                    "pause" if ctx.pause_event.is_set() else None
-                ),
-            ):
-                if stream == "stderr":
-                    stderr_lines.append(line)
-            result = ProcResult([str(c) for c in cmd], 0, "", "\n".join(stderr_lines))
-        except ProcError as exc:
-            if mode == "source" and decode_hwaccel == "d3d11va":
-                events.emit(StageEvent(
-                    ctx.job_id,
-                    self.name,
-                    "warning",
-                    message="encode: D3D11VA decode failed; retrying with software decode",
-                ))
-                fallback_cmd = self._ffmpeg.build_passthrough_video_encode(
+        final_build: EncodeBuildResult | None = None
+        result: ProcResult | None = None
+
+        for strat_idx, (attempt_cfg, pix_override) in enumerate(strategies):
+            eff_pix = pix_override if pix_override is not None else source_pix
+            build = build_encoder_args(
+                attempt_cfg,
+                target_width=tw,
+                target_height=th,
+                source_pix_fmt=eff_pix,
+                fps_mode="passthrough",
+            )
+            if strat_idx == 0:
+                for r in build.rationale:
+                    events.emit(StageEvent(ctx.job_id, self.name, "log", message=r))
+            gp = list(build.global_prefix) if build.global_prefix else None
+            if mode == "frames":
+                cmd = self._build_frames_cmd(
+                    ctx, plan, out_path, build_args=build.args, global_prefix=gp,
+                )
+            else:
+                cmd = self._ffmpeg.build_passthrough_video_encode(
                     source=ctx.source_path,
                     video_only_out=out_path,
                     encoder_args=build.args,
-                    decode_hwaccel="off",
+                    decode_hwaccel=decode_hwaccel,
                     progress=False,
                     allow_overwrite=True,
                     start_pts=start_pts,
                     end_pts=end_pts,
                     global_prefix=gp,
                 )
-                result = run_capture(fallback_cmd, timeout=24 * 3600.0, check=False)
-            else:
-                raise EncodeError("ffmpeg encode failed",
-                                  context={"stderr": exc.result.stderr[:2000]}) from exc
-        except ProcInterrupted as exc:
-            if exc.reason == "cancel":
-                raise CancelledError("cancelled during encode") from exc
-            ctx.extras["pause_checkpoint"] = {"stage": self.name, "status": "interrupted"}
-            raise PausedError("paused during encode") from exc
+
+            try:
+                stderr_lines: list[str] = []
+                for stream, line in run_streaming(
+                    cmd,
+                    should_interrupt=lambda: "cancel" if ctx.cancel_event.is_set() else (
+                        "pause" if ctx.pause_event.is_set() else None
+                    ),
+                ):
+                    if stream == "stderr":
+                        stderr_lines.append(line)
+                result = ProcResult([str(c) for c in cmd], 0, "", "\n".join(stderr_lines))
+            except ProcError as exc:
+                if mode == "source" and decode_hwaccel_has_sw_fallback(decode_hwaccel):
+                    events.emit(StageEvent(
+                        ctx.job_id,
+                        self.name,
+                        "warning",
+                        message=(
+                            f"encode: hardware decode ({decode_hwaccel}) failed; "
+                            "retrying with software decode"
+                        ),
+                    ))
+                    fallback_cmd = self._ffmpeg.build_passthrough_video_encode(
+                        source=ctx.source_path,
+                        video_only_out=out_path,
+                        encoder_args=build.args,
+                        decode_hwaccel="off",
+                        progress=False,
+                        allow_overwrite=True,
+                        start_pts=start_pts,
+                        end_pts=end_pts,
+                        global_prefix=gp,
+                    )
+                    result = run_capture(fallback_cmd, timeout=24 * 3600.0, check=False)
+                else:
+                    result = exc.result
+            except ProcInterrupted as exc:
+                if exc.reason == "cancel":
+                    raise CancelledError("cancelled during encode") from exc
+                ctx.extras["pause_checkpoint"] = {"stage": self.name, "status": "interrupted"}
+                raise PausedError("paused during encode") from exc
+
+            assert result is not None
+            if result.returncode == 0:
+                final_build = build
+                if strat_idx > 0:
+                    events.emit(StageEvent(
+                        ctx.job_id,
+                        self.name,
+                        "warning",
+                        message=(
+                            "encode: NVENC failed with the preset's quality knobs; "
+                            "succeeded after relaxing multipass / AQ / bit depth"
+                        ),
+                    ))
+                break
+
+            if strat_idx < len(strategies) - 1:
+                events.emit(StageEvent(
+                    ctx.job_id,
+                    self.name,
+                    "warning",
+                    message=(
+                        "encode: NVENC failed; retrying with safer encoder settings "
+                        f"(stderr tail: {result.stderr[-400:]!r})"
+                    ),
+                ))
+                continue
+
+            raise EncodeError(
+                "ffmpeg encode failed",
+                context={"stderr": result.stderr[:2000]},
+            )
+
+        assert final_build is not None and result is not None
         raise_if_failed(result.returncode, result.stderr)
 
         if not out_path.exists() or out_path.stat().st_size == 0:
@@ -218,7 +320,7 @@ class EncodeStage(BaseStage):
             metrics={
                 "encoder": cfg.name,
                 "size_bytes": out_path.stat().st_size,
-                "pix_fmt": build.pix_fmt,
+                "pix_fmt": final_build.pix_fmt,
                 "mode": mode,
             },
         )

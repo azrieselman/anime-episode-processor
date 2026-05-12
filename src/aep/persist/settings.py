@@ -26,7 +26,7 @@ from aep.util.paths import runtime_dir
 log = logging.getLogger(__name__)
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
-DecodeHwaccelMode = Literal["auto", "off", "d3d11va"]
+DecodeHwaccelMode = Literal["auto", "off", "d3d11va", "cuda"]
 PipelineOrder = Literal["interpolate_first", "upscale_first"]
 
 

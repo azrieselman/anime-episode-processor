@@ -61,7 +61,7 @@ EncoderName = Literal[
 AmfQuality = Literal["speed", "balanced", "quality", "high_quality"]
 ContainerName = Literal["mkv", "mp4"]
 ContentClass = Literal["anime_2d", "anime_compressed", "mixed", "auto"]
-DecodeHwaccelMode = Literal["auto", "off", "d3d11va"]
+DecodeHwaccelMode = Literal["auto", "off", "d3d11va", "cuda"]
 BatchingMode = Literal["manual", "auto"]
 
 
@@ -195,6 +195,18 @@ class InterpolationCfg(BaseModel):
         default=True,
         description="Half-precision RIFE inference when supported.",
         json_schema_extra=_gui("interpolation", "simple"),
+    )
+    scene_detect_backend: Literal["pyscenedetect", "ffmpeg_scdet"] = Field(
+        default="pyscenedetect",
+        description="Backend for stage 03 scene-cut detection.",
+        json_schema_extra=_gui("interpolation", "advanced"),
+    )
+    scene_change_threshold_percent: float = Field(
+        default=10.0,
+        ge=0.1,
+        le=100.0,
+        description="FFmpeg scdet sensitivity (percent); used when scene_detect_backend=ffmpeg_scdet.",
+        json_schema_extra=_gui("interpolation", "advanced"),
     )
 
 
@@ -383,8 +395,43 @@ class PostprocessCfg(BaseModel):
 class DecodeCfg(BaseModel):
     hwaccel: DecodeHwaccelMode = Field(
         default="auto",
-        description="Decoder hardware acceleration: auto probes, off forces software, d3d11va selects DXVA/D3D11.",
+        description=(
+            "Decoder hardware acceleration: auto (D3D11VA on Windows, off elsewhere), off, "
+            "d3d11va (DXVA/D3D11), or cuda (NVIDIA NVDEC via FFmpeg -hwaccel cuda; requires "
+            "a CUDA-enabled FFmpeg build and drivers)."
+        ),
         json_schema_extra=_gui("decode", "simple"),
+    )
+
+
+class FrameDedupeCfg(BaseModel):
+    """Optional ffmpeg scene-score pass to skip near-duplicate frames before NCNN stages."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "When true (and the frame pipeline is active), decode is compacted using "
+            "per-frame scene scores; RIFE/upscale run on fewer frames, then the full "
+            "timeline is restored with duplicate neighbors before encode."
+        ),
+        json_schema_extra=_gui("decode", "advanced"),
+    )
+    threshold: float = Field(
+        default=0.02,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Frames whose ffmpeg scene score is strictly below this (vs the previous frame) "
+            "are treated as duplicates; frame 1 is never skipped. Scores are often very small "
+            "(e.g. 1e-6–0.1); use values like 0.01–0.05 for conservative dedupe. Extremely small "
+            "thresholds can mark almost every frame a duplicate if scores cluster near zero."
+        ),
+        json_schema_extra=_gui("decode", "advanced"),
+    )
+    protect_scene_cuts: bool = Field(
+        default=True,
+        description="Never skip frames adjacent to a batch-local scene-cut boundary.",
+        json_schema_extra=_gui("decode", "advanced"),
     )
 
 
@@ -506,6 +553,11 @@ class Preset(BaseModel):
         default_factory=DecodeCfg,
         description="Decoder / hwaccel configuration.",
         json_schema_extra=_gui("decode", "simple"),
+    )
+    frame_dedupe: FrameDedupeCfg = Field(
+        default_factory=FrameDedupeCfg,
+        description="Perceptual duplicate-frame skipping before the first NCNN stage.",
+        json_schema_extra=_gui("decode", "advanced"),
     )
     streams: StreamMappingCfg = Field(
         default_factory=StreamMappingCfg,

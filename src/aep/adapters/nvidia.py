@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import shutil
-import subprocess
 from dataclasses import dataclass
 
 from aep.util.proc import run_capture
@@ -92,13 +91,7 @@ def _query_cuda_version(nvsmi: str) -> str | None:
     """`nvidia-smi -q -x` is heavy; the cheap path is to parse `nvidia-smi` text output
     once for the "CUDA Version: X.Y" header line."""
     try:
-        result = subprocess.run(
-            [nvsmi],
-            capture_output=True,
-            text=True,
-            timeout=8.0,
-            check=False,
-        )
+        result = run_capture([nvsmi], timeout=8.0, check=False)
     except Exception:
         return None
     for line in result.stdout.splitlines():

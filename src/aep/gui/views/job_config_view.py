@@ -60,6 +60,7 @@ _DECODE_HWACCEL_CHOICES: list[tuple[str, str]] = [
     ("Auto", "auto"),
     ("Off (software decode)", "off"),
     ("DirectX D3D11VA", "d3d11va"),
+    ("NVIDIA NVDEC (CUDA)", "cuda"),
 ]
 
 

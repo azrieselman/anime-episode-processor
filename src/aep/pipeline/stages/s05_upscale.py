@@ -17,6 +17,7 @@ Writes:   ctx.plan["upscale"] = {count, dir, tile_size_used, scale}, <stage>/fra
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.context import PipelineContext
 from aep.pipeline.events import EventSink, StageEvent
 from aep.pipeline.stage import BaseStage, StagePlan, StageResult
+from aep.util.frame_dedupe import expand_upscale_output_dir
 from aep.util.proc import ProcInterrupted
 
 log = logging.getLogger(__name__)
@@ -101,6 +103,13 @@ class UpscaleStage(BaseStage):
             "input_source": in_src,
             # So cache entries cannot be reused after a different upstream frame path.
             "upstream_frames_dir": upstream_path_str if active else "",
+        }
+        fd = ctx.plan.get("frame_dedupe") or {}
+        params["frame_dedupe"] = {
+            "active": bool(fd.get("active")),
+            "full_decode_count": fd.get("full_decode_count"),
+            "compact_decode_count": fd.get("compact_decode_count"),
+            "pipeline_order": ctx.plan.get("pipeline_order", "interpolate_first"),
         }
         # Tool-version inputs differ by engine; collapse to a single string.
         tool_version = "skipped"
@@ -360,6 +369,52 @@ class UpscaleStage(BaseStage):
                 f"{self.name}: produced {out_count} frames, expected {in_count}",
                 context={"in_count": in_count, "out_count": out_count},
             )
+
+        fd = ctx.plan.get("frame_dedupe") or {}
+        pipeline_order = str(ctx.plan.get("pipeline_order") or "interpolate_first")
+        full_decode_n = fd.get("full_decode_count")
+        use_expand_up = (
+            bool(fd.get("active"))
+            and pipeline_order == "upscale_first"
+            and isinstance(full_decode_n, int)
+            and full_decode_n > in_count
+            and isinstance(fd.get("kept_order"), list)
+        )
+        if use_expand_up:
+            events.emit(StageEvent(
+                ctx.job_id, self.name, "log",
+                message=f"frame dedupe: expanding upscale output {in_count} → {full_decode_n} frames",
+            ))
+            expand_root = out_dir.parent / "_upscale_expand_tmp"
+            empty_dir(expand_root)
+            try:
+                expand_upscale_output_dir(
+                    compact_up_dir=out_dir,
+                    dest_dir=expand_root,
+                    kept_order=list(fd["kept_order"]),
+                    full_count=full_decode_n,
+                    frame_format=frame_format,
+                )
+            except OSError as exc:
+                raise StageError(
+                    f"{self.name}: frame dedupe upscale expansion failed: {exc}",
+                    context={"out_dir": str(out_dir)},
+                ) from exc
+            for p in list(out_dir.iterdir()):
+                if p.is_file():
+                    p.unlink()
+            for p in sorted(expand_root.iterdir()):
+                if p.is_file():
+                    shutil.move(str(p), str(out_dir / p.name))
+            shutil.rmtree(expand_root, ignore_errors=True)
+            out_manifest = ctx.get_frame_manifest(out_dir, format=frame_format)
+            out_count = out_manifest["count"]
+            if out_count != full_decode_n:
+                raise StageError(
+                    f"{self.name}: after dedupe expansion produced {out_count} frames, "
+                    f"expected {full_decode_n}",
+                    context={"out_count": out_count},
+                )
 
         ctx.plan.setdefault("upscale", {})
         ctx.plan["upscale"]["count"] = out_count

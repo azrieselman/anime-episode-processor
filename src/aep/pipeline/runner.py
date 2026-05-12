@@ -38,6 +38,7 @@ from aep.pipeline.cache import (
 from aep.pipeline.context import PipelineContext
 from aep.pipeline.events import EventSink, StageEvent
 from aep.pipeline.stage import Stage, StageResult
+from aep.util.frame_dedupe import load_dedupe_map, merge_dedupe_state_into_plan
 from aep.util.proc import proc_stats_scope
 
 log = logging.getLogger(__name__)
@@ -78,6 +79,9 @@ def _rehydrate_plan_from_cached_stage_dir(
             fmt = params.get("frame_format")
             if isinstance(fmt, str) and fmt:
                 ctx.plan["decode"]["frame_format"] = fmt
+            ded = load_dedupe_map(stage_output_dir)
+            if ded:
+                merge_dedupe_state_into_plan(ctx, ded)
         elif stage_name == "05_upscale":
             ctx.plan.setdefault("upscale", {})
             fd = artifacts.get("frames_dir")
@@ -436,14 +440,28 @@ class PipelineRunner:
         if not skip_cache:
             cache_hit = cache_lookup(ctx.job_id, stage.name)
             if cache_hit and cache_hit[0] == plan.cache_key:
-                _rehydrate_plan_from_cached_stage_dir(
-                    ctx, stage.name, cache_hit[1],
-                )
-                events.emit(StageEvent(ctx.job_id, stage.name, "skipped",
-                                       message=f"cache hit ({plan.cache_key[:8]})"))
-                _record(StageResult(stage.name, success=True, duration_s=0.0,
-                                    cached=True, notes=[f"cache_key={plan.cache_key}"]))
-                return
+                cached_dir = cache_hit[1]
+                # Defensive: a cache hit whose output_dir was deleted out from
+                # under us (cancel cleanup, manual rm, RAM-disk reboot, etc.)
+                # cannot rehydrate ctx fields like media_info/plan, and the
+                # next stage typically explodes on a None precondition. Treat
+                # it as a miss and re-run the stage instead of trusting the
+                # row blindly.
+                if not cached_dir.is_dir():
+                    log.info(
+                        "stage cache for %s/%s points at missing dir %s; "
+                        "treating as miss and re-running",
+                        ctx.job_id, stage.name, cached_dir,
+                    )
+                else:
+                    _rehydrate_plan_from_cached_stage_dir(
+                        ctx, stage.name, cached_dir,
+                    )
+                    events.emit(StageEvent(ctx.job_id, stage.name, "skipped",
+                                           message=f"cache hit ({plan.cache_key[:8]})"))
+                    _record(StageResult(stage.name, success=True, duration_s=0.0,
+                                        cached=True, notes=[f"cache_key={plan.cache_key}"]))
+                    return
 
         events.emit(StageEvent(ctx.job_id, stage.name, "started",
                                message=f"plan={plan.cache_key[:8]}"))

@@ -37,6 +37,7 @@ Writes:   ctx.plan["interpolate"] = {count, dir, multiplier, cuts_applied}
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from pathlib import Path
 
@@ -56,7 +57,11 @@ from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.context import PipelineContext
 from aep.pipeline.events import EventSink, StageEvent
 from aep.pipeline.stage import BaseStage, StagePlan, StageResult
-from aep.util.fps import parse_rational
+from aep.util.frame_dedupe import (
+    decode_batch_frame_offset,
+    expand_rife_output_dir,
+    local_cuts_compact_from_full,
+)
 from aep.util.proc import ProcError, ProcInterrupted, run_streaming
 
 log = logging.getLogger(__name__)
@@ -95,6 +100,13 @@ class InterpolateStage(BaseStage):
             "rife_threads": rife_threads,
             "input_source": in_src,  # "upscale" or "decode"
             "upstream_frames_dir": upstream_dir,
+        }
+        fd = ctx.plan.get("frame_dedupe") or {}
+        params["frame_dedupe"] = {
+            "active": bool(fd.get("active")),
+            "full_decode_count": fd.get("full_decode_count"),
+            "compact_decode_count": fd.get("compact_decode_count"),
+            "pipeline_order": ctx.plan.get("pipeline_order", "interpolate_first"),
         }
         tool_version = "skipped"
         if active:
@@ -149,20 +161,45 @@ class InterpolateStage(BaseStage):
             raise StageError(f"{self.name}: no input frames in {in_dir}")
         empty_dir(out_dir)
 
+        fd = ctx.plan.get("frame_dedupe") or {}
+        pipeline_order = str(ctx.plan.get("pipeline_order") or "interpolate_first")
+        full_decode_n = fd.get("full_decode_count")
+        if not isinstance(full_decode_n, int) or full_decode_n <= 0:
+            full_decode_n = in_count
+        use_compact_rife = (
+            bool(fd.get("active"))
+            and pipeline_order == "interpolate_first"
+            and isinstance(fd.get("kept_order"), list)
+            and full_decode_n > in_count
+        )
+        kept_order: list[int] = list(fd["kept_order"]) if use_compact_rife else []
+
         # Translate global scene cuts (source-frame indices) into batch-local
         # 1-based input indices. In single-pass mode (no pts_window) the
         # offset is 0 and the helper is a straight 1-based renumber + filter.
-        batch_offset = self._batch_frame_offset(ctx)
-        local_cuts = local_cuts_from_global(
-            ctx.scene_cuts,
-            batch_offset=batch_offset,
-            in_count=in_count,
-        )
+        batch_offset = decode_batch_frame_offset(ctx)
+        if use_compact_rife:
+            local_cuts_full = local_cuts_from_global(
+                ctx.scene_cuts,
+                batch_offset=batch_offset,
+                in_count=full_decode_n,
+            )
+            local_cuts = local_cuts_compact_from_full(
+                local_cuts_full,
+                kept_order,
+                l_prime=in_count,
+            )
+        else:
+            local_cuts = local_cuts_from_global(
+                ctx.scene_cuts,
+                batch_offset=batch_offset,
+                in_count=in_count,
+            )
         events.emit(StageEvent(
             ctx.job_id, self.name, "log",
             message=(
                 f"interpolating {in_count} frames at {multiplier}x "
-                f"(batch_offset={batch_offset}, "
+                f"(batch_offset={batch_offset}, full_decode={full_decode_n}, "
                 f"{len(local_cuts)} scene cut(s) inside this batch "
                 f"of {len(ctx.scene_cuts)} global)"
             ),
@@ -220,6 +257,35 @@ class InterpolateStage(BaseStage):
             )
             cuts_applied += 1
 
+        if use_compact_rife:
+            expand_root = out_dir.parent / "_rife_expand_tmp"
+            empty_dir(expand_root)
+            try:
+                expand_rife_output_dir(
+                    compact_rife_dir=out_dir,
+                    dest_dir=expand_root,
+                    kept_order=kept_order,
+                    full_count=full_decode_n,
+                    multiplier=multiplier,
+                    frame_format=frame_format,
+                )
+            except OSError as exc:
+                raise StageError(
+                    f"{self.name}: frame dedupe expansion failed: {exc}",
+                    context={"out_dir": str(out_dir)},
+                ) from exc
+            for p in list(out_dir.iterdir()):
+                if p.is_file():
+                    p.unlink()
+            for p in sorted(expand_root.iterdir()):
+                if p.is_file():
+                    shutil.move(str(p), str(out_dir / p.name))
+            shutil.rmtree(expand_root, ignore_errors=True)
+
+        expected_total = (
+            full_decode_n * multiplier if use_compact_rife else expected_output_count(in_count, multiplier)
+        )
+
         # Sanity: total frame count is unchanged by the post-process step
         # (it overwrites in place rather than inserting frames).
         produced_manifest = ctx.get_frame_manifest(out_dir, format=frame_format)
@@ -271,47 +337,6 @@ class InterpolateStage(BaseStage):
         except Exception as exc:
             log.debug("settings load failed at plan time; using default RIFE threads: %s", exc)
             return DEFAULT_RIFE_THREADS
-
-    def _batch_frame_offset(self, ctx: PipelineContext) -> int:
-        """Source-frame index of this batch's first decoded frame.
-
-        Returns 0 in single-pass mode (no ``decode.pts_window``). In batched
-        mode, the runner sets ``decode.pts_window = (start_pts, end_pts)``;
-        we multiply ``start_pts`` by the source's average frame rate to
-        recover the offset. This matches what stage 04 does when seeking with
-        ``-ss``.
-
-        We log and fall back to 0 when the source FPS can't be parsed — that
-        path matches the legacy behavior of ignoring the offset, so a
-        misconfigured probe doesn't cause a hard failure here.
-        """
-        decode = ctx.plan.get("decode", {}) or {}
-        pts_window = decode.get("pts_window")
-        if not pts_window:
-            return 0
-        try:
-            start_pts = float(pts_window[0])
-        except (TypeError, ValueError, IndexError):
-            log.warning(
-                "%s: malformed pts_window %r; assuming offset=0",
-                self.name, pts_window,
-            )
-            return 0
-        if start_pts <= 0.0:
-            return 0
-        media = ctx.media_info
-        primary = media.primary_video if media is not None else None
-        if primary is None:
-            return 0
-        fps = parse_rational(primary.avg_frame_rate) or parse_rational(primary.r_frame_rate)
-        if fps is None or fps <= 0:
-            log.warning(
-                "%s: source fps unknown; cannot translate scene cuts to "
-                "batch-local indices, assuming offset=0",
-                self.name,
-            )
-            return 0
-        return int(round(start_pts * float(fps)))
 
     def _run_rife(
         self,

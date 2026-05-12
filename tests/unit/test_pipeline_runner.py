@@ -110,11 +110,29 @@ def test_cache_hit_skips_execution(tmp_runtime: Path, tmp_path: Path) -> None:
     ctx = _make_ctx(tmp_path)
     a = _FakeStage("a")
     plan = a.plan(ctx)
-    cache_record(ctx.job_id, a.name, plan.cache_key, ctx.workdir / a.name)
+    cached_dir = ctx.workdir / a.name
+    cached_dir.mkdir(parents=True, exist_ok=True)
+    cache_record(ctx.job_id, a.name, plan.cache_key, cached_dir)
     runner = PipelineRunner([a])
     results = runner.run(ctx, EventSink())
     assert a.ran is False
     assert results["a"].cached is True
+
+
+def test_cache_hit_with_missing_output_dir_falls_back_to_run(
+    tmp_runtime: Path, tmp_path: Path,
+) -> None:
+    """Cache rows orphaned by cleanup must not skip the stage."""
+    init_db()
+    ctx = _make_ctx(tmp_path)
+    a = _FakeStage("a")
+    plan = a.plan(ctx)
+    cache_record(ctx.job_id, a.name, plan.cache_key, ctx.workdir / a.name)
+    runner = PipelineRunner([a])
+    results = runner.run(ctx, EventSink())
+    assert a.ran is True
+    assert results["a"].cached is False
+    assert results["a"].success is True
 
 
 def test_probe_cache_hit_rehydrates_media_info(tmp_runtime: Path, tmp_path: Path) -> None:

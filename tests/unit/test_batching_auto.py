@@ -157,6 +157,71 @@ def test_auto_resolves_batches_when_tight_space(
     assert meta.get("resolved_chunk_seconds", 999) <= 600
 
 
+def test_auto_resolves_batches_when_m3_output_fps_unset_but_nb_frames_known(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto sizing must use byte estimates even when ffprobe yields no usable fps.
+
+    If ``plan_batches`` sees ``output_fps=None`` it assigns zero ``est_bytes`` per
+    batch, so the binary search always picks ``chunk_seconds`` as the cap — the
+    bug this regression guards against.
+    """
+    preset = _small_preset(
+        batching=BatchingCfg(
+            mode="auto",
+            chunk_seconds=600,
+            boundary_policy="exact",
+        ),
+    )
+    primary = StreamInfo(
+        index=0,
+        kind="video",
+        codec_name="h264",
+        pix_fmt="yuv420p",
+        avg_frame_rate="",
+        r_frame_rate="",
+        width=320,
+        height=240,
+        nb_frames=int(300.0 * 24),
+    )
+    media = MediaInfo(
+        source_path="/tmp/x.mkv",
+        fmt=FormatInfo(
+            filename="/tmp/x.mkv", format_name="matroska", duration_s=300.0,
+        ),
+        streams=[primary],
+        is_matroska=True,
+    )
+    ctx = _ctx(tmp_path, ramdisk=True)
+    m3, _w, _r = _plan_m3_video_path(
+        preset, media, primary, decode_hwaccel=_resolve_decode_hwaccel("off"),
+    )
+    assert not (m3.get("output_fps") or "").strip()
+    tw, th = _resolve_target_geometry(preset, media)
+    est = _estimate_frame_bytes(media=media, target_w=tw, target_h=th, m3_plan=m3)
+    assert est > 50 * 1024 * 1024
+
+    mock_usage = MagicMock()
+    mock_usage.free = 80 * 1024 * 1024
+    monkeypatch.setattr(
+        "aep.pipeline.stages.s01_plan.shutil.disk_usage", lambda _p: mock_usage,
+    )
+
+    batches, meta = _plan_video_batches(
+        ctx=ctx,
+        preset=preset,
+        media=media,
+        primary=primary,
+        target_w=tw,
+        target_h=th,
+        m3_plan=m3,
+        ramdisk_estimate=est,
+    )
+    assert len(batches) >= 2
+    assert meta.get("resolved_chunk_seconds") is not None
+    assert meta.get("resolved_chunk_seconds", 999) < 600
+
+
 def test_auto_raises_when_batching_needed_but_no_ramdisk_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

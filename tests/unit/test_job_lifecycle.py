@@ -6,7 +6,9 @@ from unittest.mock import patch
 from aep.jobs.cleanup import cleanup_job_artifacts
 from aep.jobs.models import Job, JobState
 from aep.jobs.queue import get_job, insert_job, update_job
-from aep.persist.db import init_db
+from aep.persist.db import connect, init_db
+from aep.pipeline.cache import lookup as cache_lookup
+from aep.pipeline.cache import record as cache_record
 
 
 def test_job_retry_metadata_roundtrip(tmp_runtime: Path, tmp_path: Path) -> None:
@@ -37,6 +39,36 @@ def test_cleanup_job_artifacts_removes_workdir_and_ramdisk(tmp_runtime: Path, tm
     cleanup_job_artifacts(job_id, ramdisk_path=ramdisk)
     assert not workdir.exists()
     assert not (ramdisk / job_id).exists()
+
+
+def test_cleanup_job_artifacts_clears_stage_cache(tmp_runtime: Path, tmp_path: Path) -> None:
+    """Without this, a re-queued job hits the cache for 00_probe but the
+    rehydration of ctx.media_info silently no-ops (probe.json was deleted with
+    the workdir), and 01_plan then explodes with
+    'requires 00_probe to have populated ctx.media_info'.
+    """
+    init_db()
+    job_id = "cleanup_cache_job"
+    workdir = tmp_runtime / "jobs" / job_id
+    probe_dir = workdir / "00_probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    (probe_dir / "probe.json").write_text("{}", encoding="utf-8")
+    cache_record(job_id, "00_probe", "deadbeef", probe_dir)
+    cache_record(job_id, "01_plan", "cafebabe", workdir / "01_plan")
+    other_job = "other_job"
+    cache_record(other_job, "00_probe", "feedface", tmp_path / "other_probe")
+
+    assert cache_lookup(job_id, "00_probe") is not None
+    cleanup_job_artifacts(job_id)
+    assert cache_lookup(job_id, "00_probe") is None
+    assert cache_lookup(job_id, "01_plan") is None
+    assert cache_lookup(other_job, "00_probe") is not None
+
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT job_id FROM stage_cache WHERE job_id=?", (job_id,)
+        ).fetchall()
+    assert rows == []
 
 
 def test_broker_retry_failed_when_last_failed_stage_null(tmp_runtime: Path, tmp_path: Path) -> None:

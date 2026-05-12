@@ -379,6 +379,13 @@ def test_decode_hwaccel_is_written_to_decode_plan() -> None:
     assert plan["decode"]["hwaccel"] == "d3d11va"
 
 
+def test_decode_hwaccel_cuda_is_written_to_decode_plan() -> None:
+    media, primary = _make_media()
+    preset = _make_preset(upscaler_enabled=False, interp_enabled=False, pp_enabled=True, pp_deband=True)
+    plan, _w, _r = _plan_m3_video_path(preset, media, primary, decode_hwaccel="cuda")
+    assert plan["decode"]["hwaccel"] == "cuda"
+
+
 def test_resolve_decode_hwaccel_auto_windows(monkeypatch) -> None:
     import aep.pipeline.stages.s01_plan as s01
     monkeypatch.setattr(s01.os, "name", "nt")
@@ -389,6 +396,10 @@ def test_resolve_decode_hwaccel_auto_non_windows(monkeypatch) -> None:
     import aep.pipeline.stages.s01_plan as s01
     monkeypatch.setattr(s01.os, "name", "posix")
     assert _resolve_decode_hwaccel("auto") == "off"
+
+
+def test_resolve_decode_hwaccel_cuda() -> None:
+    assert _resolve_decode_hwaccel("cuda") == "cuda"
 
 
 # ---------- input_source chain --------------------------------------------

@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Literal
+
+from aep.util.proc import ProcError, run_capture
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ def probe_windows_adapters() -> list[WindowsAdapter]:
         "Select-Object Name,AdapterRAM | ConvertTo-Json -Compress -Depth 3"
     )
     try:
-        proc = subprocess.run(
+        proc = run_capture(
             [
                 "powershell",
                 "-NoProfile",
@@ -46,12 +47,10 @@ def probe_windows_adapters() -> list[WindowsAdapter]:
                 "-Command",
                 ps,
             ],
-            capture_output=True,
-            text=True,
             timeout=15.0,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ProcError) as exc:
         log.warning("windows_gpu: PowerShell probe failed: %s", exc)
         return []
 

@@ -36,6 +36,13 @@ def test_roundtrip(tmp_runtime: Path) -> None:
     assert loaded.paths.vapoursynth_dir == str(tmp_runtime / "vapoursynth")
 
 
+def test_decode_hwaccel_cuda_roundtrip(tmp_runtime: Path) -> None:
+    s = AppSettings()
+    s.hardware.decode_hwaccel = "cuda"
+    save_settings(s)
+    assert load_settings().hardware.decode_hwaccel == "cuda"
+
+
 def test_invalid_file_raises(tmp_runtime: Path) -> None:
     p = settings_path()
     p.parent.mkdir(parents=True, exist_ok=True)

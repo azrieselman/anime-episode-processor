@@ -6,7 +6,7 @@ flow without IPC plumbing. The public API is broker-agnostic so a subprocess wor
 backend can drop in later without GUI changes.
 
 Public surface:
-* enqueue(source_path, preset_id, output_path=None) -> Job
+* enqueue(source_path, preset_id, output_path=None, preset_overrides=None) -> Job
 * cancel(job_id) — stop if running; reset job to a blank QUEUED row (cleanup artifacts)
 * pause(job_id) / resume(job_id)
 * subscribe(callback) — receives StageEvents AND job state changes
@@ -167,12 +167,14 @@ class JobBroker:
         preset_id: str,
         *,
         output_path: Path | str | None = None,
+        preset_overrides: dict[str, object] | None = None,
     ) -> Job:
         src = Path(source_path).resolve()
         job = Job(
             source_path=str(src),
             output_path=str(output_path) if output_path else None,
             preset_id=preset_id,
+            preset_overrides=preset_overrides,
         )
         insert_job(job)
         log.info("enqueued job %s for %s preset=%s", job.id, src, preset_id)
