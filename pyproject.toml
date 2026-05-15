@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anime-episode-processor"
+version = "1.0.0b2"
+description = "Local Windows GUI for upscaling, interpolating, and re-encoding anime episodes."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "AEP Project" }]
+dependencies = [
+    "packaging>=24.0",
+    "PySide6>=6.6,<6.8",
+    "pydantic>=2.6,<3",
+    "PyYAML>=6.0",
+    "jsonschema>=4.21",
+    "watchdog>=4.0",
+    "rich>=13.7",
+    "scenedetect>=0.6.5",
+    "opencv-python-headless>=4.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "types-PyYAML",
+]
+package = [
+    "pyinstaller>=6.6",
+]
+
+[project.scripts]
+aep-cli = "aep.cli.aep_cli:main"
+aep-worker = "aep.cli.aep_worker_cli:main"
+
+[project.gui-scripts]
+aep-gui = "aep.gui.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+aep = ["py.typed", "gui/resources/*.ico", "gui/resources/sidebar/*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+# Narrow rule set for the 1.0.0-beta1 baseline. The full PL/UP/RUF rule
+# families surface 250+ existing violations across pre-beta code; tightening
+# them is post-beta cleanup work tracked in the changelog. The selection
+# below catches real bugs (F-class undefined names, E-class syntax issues,
+# B-class bug patterns, I-class import sorting) without churning the whole
+# codebase.
+select = ["E", "F", "W", "I", "B"]
+ignore = [
+    "E501",     # line-too-long: pre-beta lines exceed 110 in many places; not a bug
+    "E702",     # multiple statements on one line — used liberally in test fixtures
+    "E731",     # lambda assignment — fine for short helpers
+    "B008",     # do not perform function call in argument defaults
+    "B904",     # raise from within except — many sites use plain raise
+    "B017",     # assert raises Exception in tests
+    "B007",     # unused loop variable
+    "B005",     # strip with multi-character — historical use
+    "B905",     # zip() without explicit strict=
+    "F841",     # unused local variable — pre-beta debugging artifacts
+]
+
+[tool.mypy]
+# Beta-1 baseline: type-check the package non-strictly so CI is meaningful
+# but doesn't block on the dozens of pre-existing strict-mode issues.
+# Tightening to --strict is tracked as post-beta cleanup work.
+python_version = "3.11"
+ignore_missing_imports = true
+files = ["src/aep"]
+warn_redundant_casts = true
+warn_unused_ignores = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
