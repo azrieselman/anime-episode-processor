@@ -3,11 +3,11 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from aep.adapters.ffmpeg import decode_hwaccel_uses_hardware_decode
 from aep.persist.presets import EncoderCfg
 from aep.pipeline.context import PipelineContext
 from aep.pipeline.events import EventSink
 from aep.pipeline.stage import StagePlan
-from aep.adapters.ffmpeg import decode_hwaccel_uses_hardware_decode
 from aep.pipeline.stages.s04_decode_serve import DecodeServeStage
 from aep.pipeline.stages.s08_encode import EncodeStage
 from aep.util.proc import ProcError, ProcResult

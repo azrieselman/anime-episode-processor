@@ -173,10 +173,10 @@ ANIME4KCPP_PIN = ToolPin(
     subdir="anime4kcpp",
     version="3.2.0",
     archive_url=(
-        "https://github.com/TianZerL/Anime4KCPP/releases/download/"
-        "v3.2.0/Anime4KCPP-CLI-v3.2.0-x64-MSVC.zip"
+        "https://github.com/azrieselman/anime-episode-processor/releases/download/"
+        "other/anime4kcpp-3.2.0.zip"
     ),
-    archive_sha256="82897b0f03ddb88ab3d1affb745baf99506cfe3ceffaeaf73796c6dea4077f19",
+    archive_sha256="3aad082a8248caf54b13c0d25178cd54d2ca63f8261a6d8d110d6b3dde3f3a22",
     archive_format="zip",
     files=(
         ("ac_cli.exe", "ac_cli.exe"),

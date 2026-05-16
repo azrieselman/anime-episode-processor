@@ -55,13 +55,20 @@ def detect_scene_cuts_ffmpeg_scdet(
     video_stream_index: int,
     threshold_percent: float,
     fps: Fraction,
+    scale_width: int = 320,
     timeout: float = 3600.0,
 ) -> list[SceneCut]:
-    """Run FFmpeg ``scdet`` on the given stream; return raw cut records."""
+    """Run FFmpeg ``scdet`` on the given stream; return raw cut records.
+
+    When ``scale_width`` > 0, frames are downscaled with ``scale=W:-1`` before
+    ``scdet`` for faster analysis; timestamps map back via source frame rate.
+    """
     from aep.adapters.base import env_with_tool_dirs
     from aep.util.proc import run_capture
 
     pct = max(0.0, min(100.0, float(threshold_percent)))
+    w = int(scale_width)
+    vf = f"scale={w}:-1,scdet=t={pct}" if w > 0 else f"scdet=t={pct}"
     cmd: list[str | Path] = [
         ffmpeg_executable,
         "-hide_banner",
@@ -73,7 +80,7 @@ def detect_scene_cuts_ffmpeg_scdet(
         "-map",
         f"0:{int(video_stream_index)}",
         "-vf",
-        f"scdet=t={pct}",
+        vf,
         "-an",
         "-sn",
         "-dn",

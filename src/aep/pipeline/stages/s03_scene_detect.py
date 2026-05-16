@@ -53,10 +53,12 @@ class SceneDetectStage(BaseStage):
         active = preset.interpolation.enabled
         scene_backend = str(preset.interpolation.scene_detect_backend)
         ffmpeg_pct = float(preset.interpolation.scene_change_threshold_percent)
+        ffmpeg_scdet_w = int(preset.interpolation.ffmpeg_scdet_scale_width)
         params: dict[str, object] = {
             "threshold": threshold,
             "scene_detect_backend": scene_backend,
             "scene_change_threshold_percent": ffmpeg_pct,
+            "ffmpeg_scdet_scale_width": ffmpeg_scdet_w,
             "active": active,
             "decode_hwaccel": str((ctx.plan.get("decode", {}) or {}).get("hwaccel", "off")),
         }
@@ -87,6 +89,7 @@ class SceneDetectStage(BaseStage):
         threshold = float(plan.params.get("threshold", 0.4))
         backend = str(plan.params.get("scene_detect_backend", "pyscenedetect"))
         ffmpeg_pct = float(plan.params.get("scene_change_threshold_percent", 10.0))
+        ffmpeg_scdet_w = int(plan.params.get("ffmpeg_scdet_scale_width", 320))
 
         if not active or primary is None:
             ctx.scene_cuts = []
@@ -117,9 +120,10 @@ class SceneDetectStage(BaseStage):
         nb = primary.nb_frames or fps_total_frames(fps, duration)
 
         if backend == "ffmpeg_scdet":
+            scale_note = f"scale_width={ffmpeg_scdet_w}" if ffmpeg_scdet_w > 0 else "scale_width=0 (full-res)"
             events.emit(StageEvent(
                 ctx.job_id, self.name, "started",
-                message=f"scene detect backend=ffmpeg_scdet threshold_percent={ffmpeg_pct}",
+                message=f"scene detect backend=ffmpeg_scdet threshold_percent={ffmpeg_pct} {scale_note}",
             ))
             try:
                 raw_cuts = detect_scene_cuts_ffmpeg_scdet(
@@ -128,6 +132,7 @@ class SceneDetectStage(BaseStage):
                     video_stream_index=primary.index,
                     threshold_percent=ffmpeg_pct,
                     fps=fps,
+                    scale_width=ffmpeg_scdet_w,
                 )
             except Exception as exc:
                 raise PipelineError(f"{self.name}: ffmpeg scene detection failed: {exc}") from exc
@@ -156,6 +161,7 @@ class SceneDetectStage(BaseStage):
             active=True,
             scene_detect_backend=backend,
             scene_change_threshold_percent=ffmpeg_pct if backend == "ffmpeg_scdet" else None,
+            ffmpeg_scdet_scale_width=ffmpeg_scdet_w if backend == "ffmpeg_scdet" else None,
         )
 
         events.emit(StageEvent(
@@ -221,6 +227,7 @@ def _write_report(
     active: bool,
     scene_detect_backend: str | None = None,
     scene_change_threshold_percent: float | None = None,
+    ffmpeg_scdet_scale_width: int | None = None,
 ) -> None:
     report: dict[str, object] = {
         "active": active,
@@ -234,4 +241,6 @@ def _write_report(
         report["scene_detect_backend"] = scene_detect_backend
     if scene_change_threshold_percent is not None:
         report["scene_change_threshold_percent"] = scene_change_threshold_percent
+    if ffmpeg_scdet_scale_width is not None:
+        report["ffmpeg_scdet_scale_width"] = ffmpeg_scdet_scale_width
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")

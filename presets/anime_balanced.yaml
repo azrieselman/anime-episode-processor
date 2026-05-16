@@ -16,7 +16,7 @@ target_resolution:
   height: null
 upscaler:
   engine: anime4kcpp
-  model: acnet-f8b4-hdn
+  model: arnet-f8b8-hdn
   scale: 2
   denoise: 1
   tile_size: 256
@@ -44,7 +44,7 @@ encoder:
   nvenc_cq: 19
   nvenc_multipass: qres
   nvenc_spatial_aq: true
-  nvenc_temporal_aq: true
+  nvenc_temporal_aq: false
   nvenc_bframes: 3
   nvenc_b_ref_mode: middle
   qsv_preset: medium
@@ -59,8 +59,9 @@ encoder:
   extra_args: []
 decode:
   hwaccel: cuda
+  png_intermediate_codec: mjpeg
 frame_dedupe:
-  enabled: true
+  enabled: false
   threshold: 0.000005
   protect_scene_cuts: true
 streams:

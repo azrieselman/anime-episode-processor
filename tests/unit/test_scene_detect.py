@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from aep.encode.scene_detect import (
     SceneCut,
     cuts_to_frame_indices,
+    detect_scene_cuts_ffmpeg_scdet,
     parse_scdet_log,
     scdet_timestr_to_seconds,
 )
@@ -80,6 +84,47 @@ def test_parse_scdet_log_multiple_lines() -> None:
         "lavfi.scd.score: 11.000, lavfi.scd.time: 3.500000\n"
     )
     assert parse_scdet_log(text) == [(10.0, 1.0), (11.0, 3.5)]
+
+
+def test_ffmpeg_scdet_vf_includes_downscale_before_scdet() -> None:
+    cmds: list[list[str | Path]] = []
+
+    def fake_run_capture(cmd: list[str | Path], **_: object) -> SimpleNamespace:
+        cmds.append(cmd)
+        return SimpleNamespace(stderr="", stdout="")
+
+    with patch("aep.util.proc.run_capture", side_effect=fake_run_capture):
+        detect_scene_cuts_ffmpeg_scdet(
+            Path("/fake.mkv"),
+            ffmpeg_executable="ffmpeg",
+            video_stream_index=0,
+            threshold_percent=10.0,
+            fps=Fraction(24, 1),
+            scale_width=320,
+        )
+    assert cmds
+    vf_i = cmds[0].index("-vf")
+    assert cmds[0][vf_i + 1] == "scale=320:-1,scdet=t=10.0"
+
+
+def test_ffmpeg_scdet_vf_full_res_when_scale_width_zero() -> None:
+    cmds: list[list[str | Path]] = []
+
+    def fake_run_capture(cmd: list[str | Path], **_: object) -> SimpleNamespace:
+        cmds.append(cmd)
+        return SimpleNamespace(stderr="", stdout="")
+
+    with patch("aep.util.proc.run_capture", side_effect=fake_run_capture):
+        detect_scene_cuts_ffmpeg_scdet(
+            Path("/fake.mkv"),
+            ffmpeg_executable="ffmpeg",
+            video_stream_index=0,
+            threshold_percent=12.5,
+            fps=Fraction(24, 1),
+            scale_width=0,
+        )
+    vf_i = cmds[0].index("-vf")
+    assert cmds[0][vf_i + 1] == "scdet=t=12.5"
 
 
 # ---------------------------------------------------------- report compatibility

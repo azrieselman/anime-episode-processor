@@ -222,6 +222,13 @@ class InterpolationCfg(BaseModel):
         description="FFmpeg scdet sensitivity (percent); used when scene_detect_backend=ffmpeg_scdet.",
         json_schema_extra=_gui("interpolation", "advanced"),
     )
+    ffmpeg_scdet_scale_width: int = Field(
+        default=320,
+        ge=0,
+        le=8192,
+        description="Downscale video to this width (scale=W:-1) before FFmpeg scdet for faster detection; 0 = analyze full resolution.",
+        json_schema_extra=_gui("interpolation", "advanced"),
+    )
 
 
 class EncoderCfg(BaseModel):

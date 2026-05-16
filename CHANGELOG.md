@@ -9,6 +9,41 @@ the first publicly distributed build.
 
 ## [Unreleased]
 
+## [1.0.0-beta3] — 2026-05-16
+
+Third public beta. Anime4K-legacy upscaling, faster decode/scene-detect paths,
+and decode hwaccel behavior that respects preset pins vs global Settings.
+
+### Added
+
+- **Anime4K-legacy (2.5.x)**: directory-batch `Anime4KCPP_CLI` upscaler engine with
+  CUDA-first / OpenCL-fallback GPU selection; pinned in the tools manifest.
+- **Interpolation**: `ffmpeg_scdet_scale_width` preset field (default 320) to
+  downscale before FFmpeg `scdet` for faster scene-cut detection; `0` keeps
+  full-resolution analysis.
+- **Decode**: `png_intermediate_codec` plan wiring (e.g. MJPEG intermediates for
+  faster scratch I/O vs libpng).
+
+### Changed
+
+- **Default `anime_balanced` preset**: ARNET F8B8 HDN model, MJPEG decode
+  intermediates, frame dedupe off, NVENC temporal AQ off; scene detect via
+  FFmpeg `scdet`.
+- **Anime4KCPP 3.2**: repinned CLI bundle URL/SHA256; adapter improvements for
+  long command lines and batch upscale paths.
+- **Broker / plan**: global Settings decode hwaccel applies only when the merged
+  preset still has `hwaccel: auto`; preset-pinned values (e.g. `cuda`) win.
+- **Decode stage**: hardware-accel fallback chain and related robustness tweaks.
+
+### Known limitations (unchanged from beta-2)
+
+- `02_sample_bench` real implementation (smart auto-tuning) — post-beta.
+- `av1_nvenc` → `hevc_nvenc` automatic fallback on encode failure.
+- macOS / Linux ports.
+- Out-of-process worker broker (the service layer is already abstracted for
+  the eventual move; today everything runs in-process).
+- Code-signed Windows installer.
+
 ## [1.0.0-beta2] — 2026-05-11
 
 Second public beta. Focus on queue UX, tooling verification, decode/encode
@@ -105,4 +140,5 @@ first-run tools fetcher.
 
 [1.0.0-beta1]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta1
 [1.0.0-beta2]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta2
-[Unreleased]: https://github.com/azrieselman/anime-episode-processor/compare/v1.0.0-beta2...HEAD
+[1.0.0-beta3]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta3
+[Unreleased]: https://github.com/azrieselman/anime-episode-processor/compare/v1.0.0-beta3...HEAD

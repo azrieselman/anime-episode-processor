@@ -11,7 +11,7 @@ from aep.app import update_checker
 
 
 def test_normalize_tag() -> None:
-    assert update_checker.normalize_tag("v1.0.0b2") == "1.0.0b2"
+    assert update_checker.normalize_tag("v1.0.0b3") == "1.0.0b3"
     assert update_checker.normalize_tag("V2.0.0") == "2.0.0"
     assert update_checker.normalize_tag("1.0.0") == "1.0.0"
 
@@ -37,6 +37,12 @@ def sample_releases_payload() -> bytes:
         },
         {
             "tag_name": "v1.0.0b2",
+            "draft": False,
+            "prerelease": True,
+            "html_url": "https://example.com/r-old",
+        },
+        {
+            "tag_name": "v1.0.0b3",
             "draft": False,
             "prerelease": True,
             "html_url": "https://example.com/r-new",
@@ -73,7 +79,7 @@ def test_check_for_updates_picks_newest_prerelease(sample_releases_payload: byte
         result = update_checker.check_for_updates("1.0.0b1")
 
     assert result.error is None
-    assert result.latest_tag_name == "v1.0.0b2"
+    assert result.latest_tag_name == "v1.0.0b3"
     assert result.release_url == "https://example.com/r-new"
     assert result.is_update_available is True
 
@@ -84,7 +90,7 @@ def test_check_for_updates_same_version_not_newer(sample_releases_payload: bytes
         "urlopen",
         return_value=_FakeUrlResponse(sample_releases_payload),
     ):
-        result = update_checker.check_for_updates("1.0.0b2")
+        result = update_checker.check_for_updates("1.0.0b3")
 
     assert result.is_update_available is False
 
@@ -108,4 +114,4 @@ def test_check_for_updates_skips_drafts(sample_releases_payload: bytes) -> None:
     ):
         result = update_checker.check_for_updates("1.0.0b1")
 
-    assert result.latest_tag_name == "v1.0.0b2"
+    assert result.latest_tag_name == "v1.0.0b3"

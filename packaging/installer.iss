@@ -1,7 +1,7 @@
 ; Inno Setup script for the Anime Episode Processor Windows installer.
 ;
 ; Build:    iscc packaging\installer.iss
-; Output:   dist\AEP-Setup-1.0.0-beta2.exe
+; Output:   dist\AEP-Setup-1.0.0-beta3.exe
 ;
 ; Prerequisites:
 ;   * `pyinstaller packaging/aep.spec --clean` has produced dist\aep-gui\.
@@ -14,7 +14,7 @@
 
 #define MyAppName        "Anime Episode Processor"
 #define MyAppShortName   "AEP"
-#define MyAppVersion     "1.0.0-beta2"
+#define MyAppVersion     "1.0.0-beta3"
 #define MyAppPublisher   "Andreas Rieselman"
 #define MyAppURL         "https://github.com/azrieselman/anime-episode-processor"
 #define MyAppExeName     "aep-gui.exe"
