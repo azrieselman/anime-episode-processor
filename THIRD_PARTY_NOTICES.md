@@ -20,7 +20,7 @@ the upstream archive ships one).
 | Real-ESRGAN (ncnn-vulkan) | v0.2.0 | <https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan> | BSD-3-Clause |
 | RIFE (ncnn-vulkan, TNTwise build) | 20250112 | <https://github.com/TNTwise/rife-ncnn-vulkan> | MIT |
 | waifu2x (ncnn-vulkan) | 20220728 | <https://github.com/nihui/waifu2x-ncnn-vulkan> | MIT |
-| Anime4KCPP CLI | 3.2.0 | <https://github.com/TianZerL/Anime4KCPP> | MIT |
+| Anime4KCPP CLI | 3.2.0/2.5.0 | <https://github.com/TianZerL/Anime4KCPP> | MIT |
 | Anime4KCPP VapourSynth filter | 3.2.0 | <https://github.com/TianZerL/Anime4KCPP> | MIT |
 | VapourSynth (portable wheel) | R74 | <https://github.com/vapoursynth/vapoursynth> | LGPL-2.1-or-later |
 | FFMS2 (VapourSynth source filter) | 2.40 | <https://github.com/FFMS/ffms2> | GPL-2.0-or-later |
@@ -35,11 +35,6 @@ MKVToolNix and FFMS2 binaries above:
 * Complete corresponding source code for each binary is available at the
   upstream URL listed in the table. Each project ships its own build
   instructions (typically `BUILD.md` or `README.md` at the repository root).
-* If you require an offline source archive that exactly matches a pinned
-  binary, open an issue at
-  <https://github.com/azrieselman/anime-episode-processor/issues> referencing the
-  tool name and pinned version; we will provide a download link to the
-  upstream-published source archive at no charge.
 
 ## Models
 
