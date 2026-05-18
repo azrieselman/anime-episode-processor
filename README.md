@@ -39,6 +39,8 @@ aep-gui
 
 To build the installer locally, see [`BUILDING.md`](BUILDING.md).
 
+Anime4KCPP models list: [https://github.com/TianZerL/Anime4KCPP/wiki/Model](url)
+
 ## License
 
 GPL-3.0-or-later. See [`LICENSE`](LICENSE).
