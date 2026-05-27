@@ -19,6 +19,8 @@ def test_default_when_missing(tmp_runtime: Path) -> None:
 def test_roundtrip(tmp_runtime: Path) -> None:
     s = AppSettings()
     s.general.log_level = "DEBUG"
+    s.general.auto_retry_failed_jobs = True
+    s.general.auto_retry_failed_job_attempts = 4
     s.hardware.max_concurrent_jobs = 2
     s.hardware.decode_hwaccel = "d3d11va"
     s.hardware.rife_threads = "6:8:6"
@@ -28,6 +30,8 @@ def test_roundtrip(tmp_runtime: Path) -> None:
     save_settings(s)
     loaded = load_settings()
     assert loaded.general.log_level == "DEBUG"
+    assert loaded.general.auto_retry_failed_jobs is True
+    assert loaded.general.auto_retry_failed_job_attempts == 4
     assert loaded.hardware.max_concurrent_jobs == 2
     assert loaded.hardware.decode_hwaccel == "d3d11va"
     assert loaded.hardware.rife_threads == "6:8:6"

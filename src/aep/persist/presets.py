@@ -19,10 +19,11 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from aep.errors import PresetError
 from aep.util.paths import builtin_presets_dir, user_presets_dir
+from aep.util.ffmpeg_argv import normalize_ffmpeg_extra_args
 
 log = logging.getLogger(__name__)
 
@@ -338,6 +339,11 @@ class EncoderCfg(BaseModel):
         description="Additional ffmpeg video encoder arguments as separate tokens (passed verbatim).",
         json_schema_extra=_gui("encoder", "advanced"),
     )
+
+    @field_validator("extra_args", mode="before")
+    @classmethod
+    def _normalize_extra_args(cls, v: object) -> list[str]:
+        return normalize_ffmpeg_extra_args(v)
 
 
 class StreamMappingCfg(BaseModel):

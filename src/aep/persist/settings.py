@@ -42,6 +42,11 @@ class GeneralSettings(BaseModel):
     # release dispatch. Power users who want fire-and-forget enqueue can flip
     # this in settings.json.
     auto_start_jobs: bool = False
+    # When True, failed jobs are automatically re-queued using the same
+    # resume-from-failed-stage behavior as the Queue tab's "Retry Failed"
+    # action, up to ``auto_retry_failed_job_attempts`` times.
+    auto_retry_failed_jobs: bool = False
+    auto_retry_failed_job_attempts: int = Field(default=1, ge=1, le=20)
     # When True, the Queue tab shows a Job ID column (hidden by default).
     show_queue_job_id_column: bool = False
 

@@ -109,6 +109,17 @@ class SettingsView(QWidget):
         gf.addRow("", self._keep_temp)
         self._confirm_overwrite = QCheckBox("Confirm before overwriting existing files")
         gf.addRow("", self._confirm_overwrite)
+        self._auto_retry_failed_jobs = QCheckBox(
+            "Auto-retry failed jobs (same behavior as Queue -> Retry Failed)"
+        )
+        self._auto_retry_failed_jobs.toggled.connect(self._sync_auto_retry_controls)
+        gf.addRow("", self._auto_retry_failed_jobs)
+        self._auto_retry_failed_job_attempts = QSpinBox()
+        self._auto_retry_failed_job_attempts.setRange(1, 20)
+        self._auto_retry_failed_job_attempts.setToolTip(
+            "Maximum automatic retries per job after a failed stage."
+        )
+        gf.addRow("Max auto-retries per job:", self._auto_retry_failed_job_attempts)
         self._show_queue_job_id = QCheckBox("Show job ID column in queue table")
         self._show_queue_job_id.setToolTip(
             "Display each job's internal ID in the Queue tab. Useful for logs and support."
@@ -259,6 +270,9 @@ class SettingsView(QWidget):
     def _refresh_ramdisk_free_space(self) -> None:
         self._ramdisk_free_label.setText(_format_free_space(self._ramdisk_path.text().strip()))
 
+    def _sync_auto_retry_controls(self) -> None:
+        self._auto_retry_failed_job_attempts.setEnabled(self._auto_retry_failed_jobs.isChecked())
+
     def _load(self) -> None:
         s = self._services.settings.get()
         self._log_level.setCurrentText(s.general.log_level)
@@ -266,6 +280,9 @@ class SettingsView(QWidget):
         self._naming.setText(s.general.output_naming_template)
         self._keep_temp.setChecked(s.general.keep_temp_artifacts)
         self._confirm_overwrite.setChecked(s.general.confirm_overwrite)
+        self._auto_retry_failed_jobs.setChecked(s.general.auto_retry_failed_jobs)
+        self._auto_retry_failed_job_attempts.setValue(s.general.auto_retry_failed_job_attempts)
+        self._sync_auto_retry_controls()
         self._show_queue_job_id.setChecked(s.general.show_queue_job_id_column)
         self._prefer_nvenc.setChecked(s.hardware.prefer_nvenc)
         idx = self._decode_hwaccel.findData(s.hardware.decode_hwaccel)
@@ -298,6 +315,8 @@ class SettingsView(QWidget):
         s.general.output_naming_template = self._naming.text().strip()
         s.general.keep_temp_artifacts = self._keep_temp.isChecked()
         s.general.confirm_overwrite = self._confirm_overwrite.isChecked()
+        s.general.auto_retry_failed_jobs = self._auto_retry_failed_jobs.isChecked()
+        s.general.auto_retry_failed_job_attempts = self._auto_retry_failed_job_attempts.value()
         s.general.show_queue_job_id_column = self._show_queue_job_id.isChecked()
         s.hardware.prefer_nvenc = self._prefer_nvenc.isChecked()
         s.hardware.decode_hwaccel = str(self._decode_hwaccel.currentData())  # type: ignore[assignment]

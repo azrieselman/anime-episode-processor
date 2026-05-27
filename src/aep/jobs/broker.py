@@ -260,6 +260,25 @@ class JobBroker:
         self._wake.set()
         return job
 
+    def _auto_retry_failed_if_enabled(self, job: Job, settings) -> bool:  # type: ignore[no-untyped-def]
+        """Re-queue FAILED jobs automatically when configured."""
+        if not bool(settings.general.auto_retry_failed_jobs):
+            return False
+        max_attempts = int(settings.general.auto_retry_failed_job_attempts)
+        if job.retry_count >= max_attempts:
+            return False
+        retried = self.retry_failed(job.id)
+        if retried is None:
+            return False
+        log.info(
+            "job %s auto-retry %d/%d (resume_from_stage=%s)",
+            retried.id,
+            retried.retry_count,
+            max_attempts,
+            retried.resume_from_stage,
+        )
+        return True
+
     def pause(self, job_id: str) -> None:
         """Request a cooperative pause for an in-flight job.
 
@@ -642,6 +661,7 @@ class JobBroker:
             update_job(job)
             self._publish(job)
             log.error("job %s failed: %s", job.id, job.error)
+            self._auto_retry_failed_if_enabled(job, settings)
         except Exception as exc:
             job.state = JobState.FAILED
             job.error = f"Unhandled: {type(exc).__name__}: {exc}"
@@ -651,6 +671,7 @@ class JobBroker:
             update_job(job)
             self._publish(job)
             log.exception("job %s crashed", job.id)
+            self._auto_retry_failed_if_enabled(job, settings)
         finally:
             if job.state in (
                 JobState.COMPLETED,

@@ -7,6 +7,7 @@ from aep.jobs.cleanup import cleanup_job_artifacts
 from aep.jobs.models import Job, JobState
 from aep.jobs.queue import get_job, insert_job, update_job
 from aep.persist.db import connect, init_db
+from aep.persist.settings import AppSettings
 from aep.pipeline.cache import lookup as cache_lookup
 from aep.pipeline.cache import record as cache_record
 
@@ -110,6 +111,52 @@ def test_retry_fields_can_be_updated(tmp_runtime: Path, tmp_path: Path) -> None:
     assert loaded.last_failed_stage == "06_interpolate"
     assert loaded.resume_from_stage == "06_interpolate"
     assert loaded.retry_count == 1
+
+
+def test_auto_retry_failed_enabled_requeues_and_increments(tmp_runtime: Path, tmp_path: Path) -> None:
+    init_db()
+    from aep.jobs.broker import JobBroker
+
+    job = Job(source_path=str(tmp_path / "in.mkv"))
+    job.state = JobState.FAILED
+    job.last_failed_stage = "06_interpolate"
+    insert_job(job)
+
+    broker = JobBroker()
+    settings = AppSettings()
+    settings.general.auto_retry_failed_jobs = True
+    settings.general.auto_retry_failed_job_attempts = 2
+
+    did_retry = broker._auto_retry_failed_if_enabled(job, settings)
+    assert did_retry is True
+    loaded = get_job(job.id)
+    assert loaded is not None
+    assert loaded.state == JobState.QUEUED
+    assert loaded.resume_from_stage == "06_interpolate"
+    assert loaded.retry_count == 1
+
+
+def test_auto_retry_failed_stops_at_max_attempts(tmp_runtime: Path, tmp_path: Path) -> None:
+    init_db()
+    from aep.jobs.broker import JobBroker
+
+    job = Job(source_path=str(tmp_path / "in.mkv"))
+    job.state = JobState.FAILED
+    job.last_failed_stage = "05_upscale"
+    job.retry_count = 2
+    insert_job(job)
+
+    broker = JobBroker()
+    settings = AppSettings()
+    settings.general.auto_retry_failed_jobs = True
+    settings.general.auto_retry_failed_job_attempts = 2
+
+    did_retry = broker._auto_retry_failed_if_enabled(job, settings)
+    assert did_retry is False
+    loaded = get_job(job.id)
+    assert loaded is not None
+    assert loaded.state == JobState.FAILED
+    assert loaded.retry_count == 2
 
 
 def test_broker_cancel_queued_resets_blank_state(tmp_runtime: Path, tmp_path: Path) -> None:
