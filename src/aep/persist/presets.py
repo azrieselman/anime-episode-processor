@@ -22,8 +22,8 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from aep.errors import PresetError
-from aep.util.paths import builtin_presets_dir, user_presets_dir
 from aep.util.ffmpeg_argv import normalize_ffmpeg_extra_args
+from aep.util.paths import builtin_presets_dir, user_presets_dir
 
 log = logging.getLogger(__name__)
 
