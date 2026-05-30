@@ -11,7 +11,6 @@ from aep.adapters.rife import local_cuts_from_global
 from aep.pipeline.batch_timing import (
     BatchFramePlan,
     batch_frame_plan_for_actual_decode,
-    batch_frame_plan_from_stored_decode,
     content_frame_offset_for_pts,
     count_numeric_frames_in_dir,
     drop_rife_output_prefix,

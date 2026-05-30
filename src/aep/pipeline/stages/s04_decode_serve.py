@@ -34,16 +34,16 @@ from aep.adapters.ffmpeg import (
     raise_if_failed,
 )
 from aep.errors import CancelledError, PausedError, PipelineError, StageError
-from aep.pipeline.cache import compute_cache_key
-from aep.pipeline.context import PipelineContext
-from aep.pipeline.events import EventSink, StageEvent
-from aep.pipeline.stage import BaseStage, StagePlan, StageResult
 from aep.pipeline.batch_timing import (
     decode_time_pad_s,
     merge_batch_frame_plan_into_decode,
     reconcile_batch_decode_outputs,
     resolve_batch_frame_plan,
 )
+from aep.pipeline.cache import compute_cache_key
+from aep.pipeline.context import PipelineContext
+from aep.pipeline.events import EventSink, StageEvent
+from aep.pipeline.stage import BaseStage, StagePlan, StageResult
 from aep.util.frame_dedupe import (
     SCENE_SCORE_META_BASENAME,
     compact_decode_directory,

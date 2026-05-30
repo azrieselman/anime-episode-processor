@@ -240,7 +240,7 @@ def test_recover_orphaned_batched_job_restarts_interrupted_batch(
 ) -> None:
     """After a crash mid-batch, resume from 04_decode_serve at the interrupted batch."""
     init_db()
-    from aep.jobs.broker import JobBroker, recover_orphaned_running_job
+    from aep.jobs.broker import recover_orphaned_running_job
     from aep.util.paths import jobs_dir
 
     job = Job(source_path=str(tmp_path / "in.mkv"))

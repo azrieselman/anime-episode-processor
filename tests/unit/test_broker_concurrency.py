@@ -17,8 +17,8 @@ import pytest
 
 from aep.jobs.broker import (
     _MAX_CONCURRENCY_HARD_CAP,
-    _runtime_mark_resumed,
     JobBroker,
+    _runtime_mark_resumed,
 )
 from aep.jobs.models import Job, JobState
 from aep.jobs.queue import get_job, insert_job, update_job
