@@ -46,7 +46,7 @@ def test_list_video_keyframes_uses_packet_probe(tmp_path: Path) -> None:
     src = tmp_path / "in.mkv"
     src.write_bytes(b"\x00")
     adapter = FFProbeAdapter()
-    adapter._path = "ffprobe"  # noqa: SLF001
+    adapter._resolved_path = Path("ffprobe")  # noqa: SLF001
 
     with patch("aep.adapters.ffprobe.run_capture") as mock_run:
         mock_run.return_value = ProcResult(
