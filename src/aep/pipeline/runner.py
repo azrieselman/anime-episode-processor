@@ -24,6 +24,12 @@ from pathlib import Path
 from aep.errors import CancelledError, PausedError, PipelineError, StageError
 from aep.media.models import MediaInfo
 from aep.persist.settings import PipelineOrder
+from aep.pipeline.batch_timing import (
+    expected_segment_duration_s,
+    output_fps_fraction_from_plan,
+    resolve_batch_frame_plan,
+    validate_encoded_segment_duration,
+)
 from aep.pipeline.batches import BatchSpec
 from aep.pipeline.cache import (
     lookup as cache_lookup,
@@ -364,6 +370,17 @@ class PipelineRunner:
                     )
                 dst_segment = segments_dir / f"segment_{batch.index:02d}.mkv"
                 _link_or_copy(src_segment, dst_segment)
+                batch_plan = resolve_batch_frame_plan(ctx)
+                if batch_plan is not None:
+                    out_fps = output_fps_fraction_from_plan(ctx)
+                    if out_fps is not None and out_fps > 0:
+                        validate_encoded_segment_duration(
+                            dst_segment,
+                            expected_duration_s=expected_segment_duration_s(
+                                batch_plan,
+                                output_fps=out_fps,
+                            ),
+                        )
                 ctx.encoded_segments.append(dst_segment)
             finally:
                 # Always clear active batch + window so a failure surfaces

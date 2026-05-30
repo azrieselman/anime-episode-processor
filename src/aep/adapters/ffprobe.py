@@ -15,6 +15,41 @@ from aep.util.proc import run_capture
 _VERSION_RE = re.compile(r"ffprobe version (\S+)")
 
 
+def keyframe_probe_timeout(duration_s: float | None) -> float:
+    """Wall-clock budget for demux-only keyframe enumeration."""
+    if duration_s is None or duration_s <= 0:
+        return 300.0
+    return max(300.0, duration_s * 0.5)
+
+
+def parse_keyframe_packets_compact(stdout: str) -> list[float]:
+    """Parse ``-of compact=p=0`` packet lines; return sorted keyframe PTS (seconds)."""
+    kfs: list[float] = []
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        fields: dict[str, str] = {}
+        for part in line.split("|"):
+            if "=" not in part:
+                continue
+            k, _, v = part.partition("=")
+            fields[k.strip()] = v.strip()
+        flags = fields.get("flags", "")
+        if "K" not in flags:
+            continue
+        for key in ("pkt_pts_time", "pts_time", "best_effort_timestamp_time"):
+            val = fields.get(key)
+            if val and val not in ("", "N/A"):
+                try:
+                    kfs.append(float(val))
+                    break
+                except ValueError:
+                    continue
+    kfs.sort()
+    return kfs
+
+
 class FFProbeAdapter(ToolAdapter):
     tool_id = "ffprobe"
     bin_name = BIN_FFPROBE
@@ -32,7 +67,8 @@ class FFProbeAdapter(ToolAdapter):
         source: Path,
         *,
         stream_index: int = 0,
-        timeout: float = 300.0,
+        duration_s: float | None = None,
+        timeout: float | None = None,
     ) -> list[float]:
         """Return sorted ascending list of keyframe presentation times (seconds).
 
@@ -41,72 +77,37 @@ class FFProbeAdapter(ToolAdapter):
         triggers a re-decode of the preceding GOP.
 
         Implementation notes:
-          * `-skip_frame nokey` filters non-keyframes at the demuxer layer,
-            so this is much cheaper than `-show_frames` on the full stream.
-          * `pkt_pts_time` is preferred when present; we fall back to
-            `pts_time` (older ffprobe builds) and then `best_effort_timestamp_time`.
-          * Streams with no decodable timestamps (rare; some MPEG-TS
-            captures) come back as an empty list — callers fall back to
-            time-based boundaries.
-          * Output is parsed as plain key=value lines (`-of default`)
-            because JSON output for `-show_packets` balloons memory on
-            long sources where every keyframe is a separate object.
+          * Demux-only ``-show_entries packet=`` with ``flags`` containing ``K``
+            avoids decoding every frame (much faster than frame-level probes on
+            long sources).
+          * ``pkt_pts_time`` is preferred when present; we fall back to
+            ``pts_time`` and then ``best_effort_timestamp_time``.
+          * Compact output keeps memory bounded vs JSON ``-show_packets``.
+          * Timeout defaults to ``max(300, duration_s * 0.5)`` when
+            ``duration_s`` is known.
         """
+        effective_timeout = (
+            timeout if timeout is not None else keyframe_probe_timeout(duration_s)
+        )
         cmd: list[str | Path] = [
             self.path,
             "-v", "error",
             "-hide_banner",
-            "-skip_frame", "nokey",
             "-select_streams", f"v:{int(stream_index)}",
-            "-show_entries", "frame=pkt_pts_time,pts_time,best_effort_timestamp_time,key_frame",
-            "-of", "default=nw=1:nk=0",
+            "-show_entries", "packet=pts_time,pkt_pts_time,best_effort_timestamp_time,flags",
+            "-of", "compact=p=0",
             str(source),
         ]
-        result = run_capture(cmd, env=env_with_tool_dirs(), timeout=timeout)
-        kfs: list[float] = []
-        # Parse "key=value" lines. We accumulate fields per frame and emit a
-        # timestamp when we hit a frame boundary (next key_frame= line, or EOF).
-        cur: dict[str, str] = {}
-
-        def _emit(d: dict[str, str]) -> None:
-            if d.get("key_frame") not in {"1", "true", "True"}:
-                # Belt-and-suspenders: -skip_frame nokey already filtered, but
-                # some builds still emit non-keyframes if metadata claims kf=0.
-                return
-            for k in ("pkt_pts_time", "pts_time", "best_effort_timestamp_time"):
-                if k in d and d[k] not in ("", "N/A"):
-                    try:
-                        kfs.append(float(d[k]))
-                        return
-                    except ValueError:
-                        continue
-
-        for raw_line in result.stdout.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            # ffprobe emits one [FRAME] block at a time; key_frame is the
-            # first field per frame in this output mode. When we see it
-            # again, the prior frame is complete.
-            if k == "key_frame" and cur:
-                _emit(cur)
-                cur = {}
-            cur[k] = v
-        if cur:
-            _emit(cur)
-
-        kfs.sort()
-        return kfs
+        result = run_capture(cmd, env=env_with_tool_dirs(), timeout=effective_timeout)
+        return parse_keyframe_packets_compact(result.stdout)
 
     def probe_full_json(self, source: Path) -> str:
         """Return ffprobe JSON for format + streams + chapters.
 
-        We deliberately do NOT use `-show_data` (way too verbose) or `-show_packets`
-        (wrong tool for the job). For attachments, we collect what ffprobe emits;
-        mkvmerge -J is run separately when authoritative attachment metadata is needed.
+        We deliberately do NOT use ``-show_data`` (way too verbose). Packet dumps
+        are only used by :meth:`list_video_keyframes` with compact output. For
+        attachments, we collect what ffprobe emits; mkvmerge -J is run separately
+        when authoritative attachment metadata is needed.
         """
         cmd: list[str | Path] = [
             self.path,

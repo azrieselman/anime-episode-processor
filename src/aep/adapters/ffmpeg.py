@@ -300,6 +300,7 @@ class FFmpegAdapter(ToolAdapter):
         decode_hwaccel: str = "off",
         start_pts: float | None = None,  # M6.5: -ss seek (input-side, before -i)
         end_pts: float | None = None,    # M6.5: -to end timestamp (output-side)
+        time_pad_s: float = 0.0,  # extra -t slack for batched chunks (trimmed later)
     ) -> list[str | Path]:
         """Build a command that decodes the source's primary video stream to a
         directory of numbered frames.
@@ -346,7 +347,7 @@ class FFmpegAdapter(ToolAdapter):
             # -to is interpreted relative to the seek point when -ss precedes -i,
             # so we pass duration = end - start to keep semantics explicit and
             # avoid surprising ffmpeg behavior across versions.
-            duration = end_pts - (start_pts or 0.0)
+            duration = end_pts - (start_pts or 0.0) + max(0.0, float(time_pad_s))
             if duration > 0:
                 cmd += ["-t", f"{duration:.6f}"]
 
@@ -414,6 +415,7 @@ class FFmpegAdapter(ToolAdapter):
         decode_hwaccel: str = "off",
         start_pts: float | None = None,
         end_pts: float | None = None,
+        time_pad_s: float = 0.0,
     ) -> list[str | Path]:
         """Single decode: frame files + ``metadata=print`` scene scores via ``filter_complex``.
 
@@ -467,7 +469,7 @@ class FFmpegAdapter(ToolAdapter):
             cmd += ["-ss", f"{start_pts:.6f}"]
         cmd += _decode_input_args(str(source), decode_hwaccel=decode_hwaccel)
         if end_pts is not None:
-            duration = end_pts - (start_pts or 0.0)
+            duration = end_pts - (start_pts or 0.0) + max(0.0, float(time_pad_s))
             if duration > 0:
                 cmd += ["-t", f"{duration:.6f}"]
         # No ``-map 0:v:0`` before ``-filter_complex``: the graph pulls ``[0:v]`` via the
@@ -600,6 +602,9 @@ class FFmpegAdapter(ToolAdapter):
             "-map", "0:v:0",
             "-map_metadata", "-1",
             "-map_chapters", "-1",
+            # CFR timestamps from image2 — passthrough/vfr causes beat-frequency
+            # flicker when frame count × tagged fps must match the plan timeline.
+            "-vsync", "cfr",
         ]
         cmd += encoder_args
         cmd += [str(video_only_out)]

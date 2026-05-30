@@ -49,8 +49,11 @@ DEDUPE_THRESHOLD_EPS = 1e-12
 
 
 def decode_batch_frame_offset(ctx: PipelineContext) -> int:
-    """Source-frame index of this batch's first decoded frame (0 if unbatched)."""
+    """0-based global index of this batch's first *content* frame (0 if unbatched)."""
     decode = ctx.plan.get("decode", {}) or {}
+    stored = decode.get("batch_content_frame_offset")
+    if isinstance(stored, int) and stored >= 0:
+        return stored
     pts_window = decode.get("pts_window")
     if not pts_window:
         return 0
@@ -69,7 +72,9 @@ def decode_batch_frame_offset(ctx: PipelineContext) -> int:
     if fps is None or fps <= 0:
         log.warning("frame_dedupe: source fps unknown; offset=0")
         return 0
-    return int(round(start_pts * float(fps)))
+    from aep.pipeline.batch_timing import content_frame_offset_for_pts
+
+    return content_frame_offset_for_pts(start_pts, fps)
 
 
 def parse_metadata_print_scene_scores(text: str) -> dict[int, float]:

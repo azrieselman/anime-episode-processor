@@ -38,6 +38,12 @@ from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.context import PipelineContext
 from aep.pipeline.events import EventSink, StageEvent
 from aep.pipeline.stage import BaseStage, StagePlan, StageResult
+from aep.pipeline.batch_timing import (
+    decode_time_pad_s,
+    merge_batch_frame_plan_into_decode,
+    reconcile_batch_decode_outputs,
+    resolve_batch_frame_plan,
+)
 from aep.util.frame_dedupe import (
     SCENE_SCORE_META_BASENAME,
     compact_decode_directory,
@@ -170,6 +176,16 @@ class DecodeServeStage(BaseStage):
                     f"decode_serve: invalid pts_window {pts_window!r}",
                 ) from exc
 
+        batch_frame_plan = resolve_batch_frame_plan(ctx)
+        decode_start_pts = start_pts
+        decode_end_pts = end_pts
+        decode_time_pad = 0.0
+        if batch_frame_plan is not None:
+            merge_batch_frame_plan_into_decode(ctx, batch_frame_plan)
+            decode_start_pts = batch_frame_plan.decode_start_pts
+            decode_end_pts = batch_frame_plan.end_pts
+            decode_time_pad = decode_time_pad_s(batch_frame_plan.source_fps)
+
         hdr = ctx.plan.get("hdr") or {}
         use_zscale = bool(hdr.get("was_10bit") or hdr.get("was_hdr_transfer"))
         bt709_normalize = bool(plan.params.get("bt709_normalize", True))
@@ -214,8 +230,9 @@ class DecodeServeStage(BaseStage):
                     bt709_normalize=bt709_normalize,
                     use_zscale=use_zscale,
                     decode_hwaccel=decode_hwaccel,
-                    start_pts=start_pts,
-                    end_pts=end_pts,
+                    start_pts=decode_start_pts,
+                    end_pts=decode_end_pts,
+                    time_pad_s=decode_time_pad,
                 )
                 result, used_fallback = self._run_decode_with_hwaccel_fallback(
                     ctx=ctx,
@@ -229,8 +246,9 @@ class DecodeServeStage(BaseStage):
                     tgt_h=tgt_h,
                     bt709_normalize=bt709_normalize,
                     use_zscale=use_zscale,
-                    start_pts=start_pts,
-                    end_pts=end_pts,
+                    start_pts=decode_start_pts,
+                    end_pts=decode_end_pts,
+                    time_pad_s=decode_time_pad,
                 )
             else:
                 fused_cmd = self._ffmpeg.build_decode_to_frames_with_scene_metadata_fused(
@@ -244,8 +262,9 @@ class DecodeServeStage(BaseStage):
                     bt709_normalize=bt709_normalize,
                     use_zscale=use_zscale,
                     decode_hwaccel=decode_hwaccel,
-                    start_pts=start_pts,
-                    end_pts=end_pts,
+                    start_pts=decode_start_pts,
+                    end_pts=decode_end_pts,
+                    time_pad_s=decode_time_pad,
                 )
                 events.emit(StageEvent(
                     ctx.job_id, self.name, "log",
@@ -265,8 +284,9 @@ class DecodeServeStage(BaseStage):
                     tgt_h=tgt_h,
                     bt709_normalize=bt709_normalize,
                     use_zscale=use_zscale,
-                    start_pts=start_pts,
-                    end_pts=end_pts,
+                    start_pts=decode_start_pts,
+                    end_pts=decode_end_pts,
+                    time_pad_s=decode_time_pad,
                 )
                 out_manifest_try = ctx.get_frame_manifest(out_dir, format=frame_format)
                 n_try = int(out_manifest_try["count"])
@@ -317,8 +337,9 @@ class DecodeServeStage(BaseStage):
                         bt709_normalize=bt709_normalize,
                         use_zscale=use_zscale,
                         decode_hwaccel=decode_hwaccel,
-                        start_pts=start_pts,
-                        end_pts=end_pts,
+                        start_pts=decode_start_pts,
+                        end_pts=decode_end_pts,
+                        time_pad_s=decode_time_pad,
                     )
                     result, used_fallback = self._run_decode_with_hwaccel_fallback(
                         ctx=ctx,
@@ -332,8 +353,9 @@ class DecodeServeStage(BaseStage):
                         tgt_h=tgt_h,
                         bt709_normalize=bt709_normalize,
                         use_zscale=use_zscale,
-                        start_pts=start_pts,
-                        end_pts=end_pts,
+                        start_pts=decode_start_pts,
+                        end_pts=decode_end_pts,
+                        time_pad_s=decode_time_pad,
                     )
         else:
             cmd = self._ffmpeg.build_decode_to_frames(
@@ -346,8 +368,9 @@ class DecodeServeStage(BaseStage):
                 bt709_normalize=bt709_normalize,
                 use_zscale=use_zscale,
                 decode_hwaccel=decode_hwaccel,
-                start_pts=start_pts,
-                end_pts=end_pts,
+                start_pts=decode_start_pts,
+                end_pts=decode_end_pts,
+                time_pad_s=decode_time_pad,
             )
             result, used_fallback = self._run_decode_with_hwaccel_fallback(
                 ctx=ctx,
@@ -361,8 +384,9 @@ class DecodeServeStage(BaseStage):
                 tgt_h=tgt_h,
                 bt709_normalize=bt709_normalize,
                 use_zscale=use_zscale,
-                start_pts=start_pts,
-                end_pts=end_pts,
+                start_pts=decode_start_pts,
+                end_pts=decode_end_pts,
+                time_pad_s=decode_time_pad,
             )
         if result.returncode != 0:
             log.error(
@@ -381,6 +405,37 @@ class DecodeServeStage(BaseStage):
                 context={"out_dir": str(out_dir), "stderr": result.stderr[-2000:]},
             )
 
+        trim_removed = 0
+        batch_reconciled_shortfall = False
+        if batch_frame_plan is not None:
+            n, trim_removed, batch_frame_plan, batch_reconciled_shortfall = (
+                reconcile_batch_decode_outputs(
+                    ctx,
+                    out_dir=out_dir,
+                    frame_format=frame_format,
+                    plan=batch_frame_plan,
+                )
+            )
+            if trim_removed:
+                events.emit(StageEvent(
+                    ctx.job_id, self.name, "log",
+                    message=(
+                        f"trimmed {trim_removed} excess decode frame(s) "
+                        f"(target {batch_frame_plan.expected_decode_frames} for "
+                        f"[{batch_frame_plan.start_pts:.3f}s, "
+                        f"{batch_frame_plan.end_pts:.3f}s))"
+                    ),
+                ))
+            elif batch_reconciled_shortfall:
+                events.emit(StageEvent(
+                    ctx.job_id, self.name, "warning",
+                    message=(
+                        f"decode_serve: reconciled batch frame plan to {n} frames "
+                        f"(window [{batch_frame_plan.start_pts:.3f}s, "
+                        f"{batch_frame_plan.end_pts:.3f}s))"
+                    ),
+                ))
+
         # Persist accounting back into ctx.plan for downstream stages.
         ctx.plan.setdefault("decode", {})
         ctx.plan["decode"]["count"] = n
@@ -395,8 +450,8 @@ class DecodeServeStage(BaseStage):
             out_dir=out_dir,
             frame_format=frame_format,
             decode_hwaccel=decode_hwaccel,
-            start_pts=start_pts,
-            end_pts=end_pts,
+            start_pts=decode_start_pts,
+            end_pts=decode_end_pts,
             full_count=n,
             precomputed_scores=precomputed_scores,
             decode_hwaccel_fallback_for_scores=dedupe_decode_hw_fallback,
@@ -413,7 +468,11 @@ class DecodeServeStage(BaseStage):
             "format": frame_format,
             "png_intermediate_codec": png_intermediate_codec,
             "output_bytes": out_manifest["bytes"],
+            "batch_trim_removed": trim_removed,
         }
+        if batch_frame_plan is not None:
+            metrics["batch_expected_content_frames"] = batch_frame_plan.expected_content_frames
+            metrics["batch_overlap_source_frames"] = batch_frame_plan.overlap_source_frames
         metrics.update(dedupe_metrics)
         return StageResult(
             stage_name=self.name,
@@ -652,6 +711,7 @@ class DecodeServeStage(BaseStage):
         use_zscale: bool,
         start_pts: float | None,
         end_pts: float | None,
+        time_pad_s: float = 0.0,
     ) -> tuple[ProcResult, bool]:
         """Run fused decode+metadata; on D3D11VA/CUDA hwaccel failure retry fusion with software decode.
 
@@ -699,6 +759,7 @@ class DecodeServeStage(BaseStage):
             decode_hwaccel="off",
             start_pts=start_pts,
             end_pts=end_pts,
+            time_pad_s=time_pad_s,
         )
         result2 = run_capture(fb_cmd, cwd=scan_cwd, timeout=24 * 3600.0, check=False)
         return result2, True
@@ -719,6 +780,7 @@ class DecodeServeStage(BaseStage):
         use_zscale: bool,
         start_pts: float | None,
         end_pts: float | None,
+        time_pad_s: float = 0.0,
     ) -> tuple[ProcResult, bool]:
         """Run the primary decode command; on D3D11VA/CUDA failure, retry without hwaccel.
 
@@ -768,6 +830,7 @@ class DecodeServeStage(BaseStage):
             decode_hwaccel="off",
             start_pts=start_pts,
             end_pts=end_pts,
+            time_pad_s=time_pad_s,
         )
         result = run_capture(fallback_cmd, timeout=24 * 3600.0, check=False)
         return result, True

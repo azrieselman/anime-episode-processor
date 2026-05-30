@@ -57,6 +57,12 @@ from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.context import PipelineContext
 from aep.pipeline.events import EventSink, StageEvent
 from aep.pipeline.stage import BaseStage, StagePlan, StageResult
+from aep.pipeline.batch_timing import (
+    assert_frame_dir_count,
+    count_numeric_frames_in_dir,
+    drop_rife_output_prefix,
+    resolve_batch_frame_plan,
+)
 from aep.util.frame_dedupe import (
     decode_batch_frame_offset,
     expand_rife_output_dir,
@@ -174,14 +180,39 @@ class InterpolateStage(BaseStage):
         )
         kept_order: list[int] = list(fd["kept_order"]) if use_compact_rife else []
 
-        # Translate global scene cuts (source-frame indices) into batch-local
-        # 1-based input indices. In single-pass mode (no pts_window) the
-        # offset is 0 and the helper is a straight 1-based renumber + filter.
+        batch_frame_plan = resolve_batch_frame_plan(ctx)
+        rife_input_base = (
+            batch_frame_plan.rife_input_base
+            if batch_frame_plan is not None
+            else decode_batch_frame_offset(ctx)
+        )
+        rife_input_count = (
+            batch_frame_plan.rife_input_count
+            if batch_frame_plan is not None
+            else in_count
+        )
+        if batch_frame_plan is not None:
+            numeric_in = count_numeric_frames_in_dir(in_dir, frame_format=frame_format)
+            if numeric_in > 0:
+                in_count = numeric_in
+            if in_count != rife_input_count:
+                raise StageError(
+                    f"{self.name}: upstream produced {in_count} frames, expected "
+                    f"{rife_input_count} for RIFE input (batch "
+                    f"[{batch_frame_plan.start_pts:.3f}s, "
+                    f"{batch_frame_plan.end_pts:.3f}s))",
+                    context={
+                        "in_dir": str(in_dir),
+                        "batch_index": ctx._active_batch_idx,
+                    },
+                )
+
+        # Translate global scene cuts into batch-local 1-based RIFE input indices.
         batch_offset = decode_batch_frame_offset(ctx)
         if use_compact_rife:
             local_cuts_full = local_cuts_from_global(
                 ctx.scene_cuts,
-                batch_offset=batch_offset,
+                rife_input_base=rife_input_base,
                 in_count=full_decode_n,
             )
             local_cuts = local_cuts_compact_from_full(
@@ -192,14 +223,15 @@ class InterpolateStage(BaseStage):
         else:
             local_cuts = local_cuts_from_global(
                 ctx.scene_cuts,
-                batch_offset=batch_offset,
-                in_count=in_count,
+                rife_input_base=rife_input_base,
+                in_count=rife_input_count,
             )
         events.emit(StageEvent(
             ctx.job_id, self.name, "log",
             message=(
                 f"interpolating {in_count} frames at {multiplier}x "
-                f"(batch_offset={batch_offset}, full_decode={full_decode_n}, "
+                f"(rife_input_base={rife_input_base}, content_offset={batch_offset}, "
+                f"full_decode={full_decode_n}, "
                 f"{len(local_cuts)} scene cut(s) inside this batch "
                 f"of {len(ctx.scene_cuts)} global)"
             ),
@@ -226,16 +258,16 @@ class InterpolateStage(BaseStage):
 
         out_manifest = ctx.get_frame_manifest(out_dir, format=frame_format)
         rife_out_count = out_manifest["count"]
-        expected_total = expected_output_count(in_count, multiplier)
-        if rife_out_count != expected_total:
+        expected_rife_total = expected_output_count(rife_input_count, multiplier)
+        if rife_out_count != expected_rife_total:
             raise StageError(
                 f"{self.name}: RIFE produced {rife_out_count} frames, expected "
-                f"{expected_total} (in={in_count}, M={multiplier})",
+                f"{expected_rife_total} (in={rife_input_count}, M={multiplier})",
             )
 
         events.emit(StageEvent(
             ctx.job_id, self.name, "progress",
-            progress=0.95,
+            progress=0.85,
             message=f"RIFE produced {rife_out_count} frames; applying scene-cut fixups",
         ))
 
@@ -256,6 +288,27 @@ class InterpolateStage(BaseStage):
                 format=frame_format,
             )
             cuts_applied += 1
+
+        rife_skip = (
+            batch_frame_plan.rife_output_skip
+            if batch_frame_plan is not None
+            else 0
+        )
+        if rife_skip > 0:
+            drop_rife_output_prefix(
+                out_dir,
+                frame_format=frame_format,
+                drop_count=rife_skip,
+            )
+            cache_key = f"{out_dir.resolve()}|{frame_format}"
+            ctx.frame_manifests.pop(cache_key, None)
+            events.emit(StageEvent(
+                ctx.job_id, self.name, "log",
+                message=(
+                    f"dropped {rife_skip} RIFE output frame(s) from overlap context "
+                    f"at batch boundary"
+                ),
+            ))
 
         if use_compact_rife:
             expand_root = out_dir.parent / "_rife_expand_tmp"
@@ -282,9 +335,12 @@ class InterpolateStage(BaseStage):
                     shutil.move(str(p), str(out_dir / p.name))
             shutil.rmtree(expand_root, ignore_errors=True)
 
-        expected_total = (
-            full_decode_n * multiplier if use_compact_rife else expected_output_count(in_count, multiplier)
-        )
+        if use_compact_rife:
+            expected_total = full_decode_n * multiplier
+        elif batch_frame_plan is not None:
+            expected_total = batch_frame_plan.expected_output_frames
+        else:
+            expected_total = expected_output_count(in_count, multiplier)
 
         # Sanity: total frame count is unchanged by the post-process step
         # (it overwrites in place rather than inserting frames).
@@ -295,6 +351,12 @@ class InterpolateStage(BaseStage):
                 f"{self.name}: produced {produced} frames, expected {expected_total} "
                 f"(in={in_count}, M={multiplier}, cuts_applied={cuts_applied})",
             )
+        assert_frame_dir_count(
+            out_dir,
+            frame_format=frame_format,
+            expected=expected_total,
+            label=self.name,
+        )
 
         ctx.plan.setdefault("interpolate", {})
         ctx.plan["interpolate"]["count"] = produced

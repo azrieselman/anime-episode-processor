@@ -195,12 +195,13 @@ class EncodeStage(BaseStage):
 
         for strat_idx, (attempt_cfg, pix_override) in enumerate(strategies):
             eff_pix = pix_override if pix_override is not None else source_pix
+            encode_fps_mode = "cfr" if mode == "frames" else "passthrough"
             build = build_encoder_args(
                 attempt_cfg,
                 target_width=tw,
                 target_height=th,
                 source_pix_fmt=eff_pix,
-                fps_mode="passthrough",
+                fps_mode=encode_fps_mode,
             )
             if strat_idx == 0:
                 for r in build.rationale:
@@ -375,6 +376,17 @@ class EncodeStage(BaseStage):
         n_frames = manifest["count"]
         if n_frames == 0:
             raise EncodeError(f"08_encode (frames mode): zero {frame_format} frames in {in_dir}")
+        expected_frames = (ctx.plan.get("decode") or {}).get("batch_expected_output_frames")
+        if isinstance(expected_frames, int) and expected_frames > 0:
+            if n_frames != expected_frames:
+                raise EncodeError(
+                    "08_encode (frames mode): frame count does not match batch plan",
+                    context={
+                        "expected": expected_frames,
+                        "got": n_frames,
+                        "dir": str(in_dir),
+                    },
+                )
 
         # output_fps comes through as "num/den" for fractional rates.
         fps_str = str(ctx.plan.get("output_fps") or "24000/1001")

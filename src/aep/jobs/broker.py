@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -63,6 +64,61 @@ def _parse_timestamp_s(ts: str | None) -> float | None:
         return None
 
 
+_RUNTIME_META_KEY = "__runtime"
+
+
+def _runtime_meta(job: Job) -> dict[str, float | str | None]:
+    plan = job.plan if isinstance(job.plan, dict) else {}
+    raw = plan.get(_RUNTIME_META_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    return dict(raw)
+
+
+def _store_runtime_meta(job: Job, meta: dict[str, float | str | None]) -> None:
+    plan = dict(job.plan or {})
+    if meta:
+        plan[_RUNTIME_META_KEY] = meta
+    else:
+        plan.pop(_RUNTIME_META_KEY, None)
+    job.plan = plan
+
+
+def _runtime_pause_started_at_s(job: Job) -> float | None:
+    pause_started = _runtime_meta(job).get("pause_started_at")
+    if isinstance(pause_started, str):
+        return _parse_timestamp_s(pause_started)
+    return None
+
+
+def _runtime_paused_accum_s(job: Job) -> float:
+    raw = _runtime_meta(job).get("paused_accum_s")
+    if isinstance(raw, (int, float)):
+        return max(0.0, float(raw))
+    return 0.0
+
+
+def _runtime_mark_paused(job: Job, now_iso: str) -> None:
+    meta = _runtime_meta(job)
+    if _runtime_pause_started_at_s(job) is None:
+        meta["pause_started_at"] = now_iso
+    if "paused_accum_s" not in meta:
+        meta["paused_accum_s"] = 0.0
+    _store_runtime_meta(job, meta)
+
+
+def _runtime_mark_resumed(job: Job, now_iso: str) -> None:
+    now_s = _parse_timestamp_s(now_iso)
+    meta = _runtime_meta(job)
+    pause_started_s = _runtime_pause_started_at_s(job)
+    paused_accum_s = _runtime_paused_accum_s(job)
+    if now_s is not None and pause_started_s is not None and now_s > pause_started_s:
+        paused_accum_s += now_s - pause_started_s
+    meta["paused_accum_s"] = paused_accum_s
+    meta["pause_started_at"] = None
+    _store_runtime_meta(job, meta)
+
+
 def _reset_job_to_blank_queued(job: Job, *, bump_created_at: bool = False) -> None:
     """Clear runtime fields so the row matches a freshly enqueued job.
 
@@ -82,6 +138,123 @@ def _reset_job_to_blank_queued(job: Job, *, bump_created_at: bool = False) -> No
     job.retry_count = 0
     if bump_created_at:
         job.created_at = _now()
+
+
+_PER_BATCH_STAGE_NAMES = frozenset({
+    "04_decode_serve",
+    "05_upscale",
+    "06_interpolate",
+    "07_postprocess",
+    "08_encode",
+})
+
+
+def _load_plan_batches(workdir: Path) -> list[dict] | None:
+    plan_path = workdir / "01_plan" / "plan.json"
+    if not plan_path.is_file():
+        return None
+    try:
+        doc = json.loads(plan_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    batches = doc.get("batches")
+    if not isinstance(batches, list) or not batches:
+        return None
+    return batches
+
+
+def _count_completed_batch_segments(workdir: Path) -> int:
+    segments_dir = workdir / "batch_segments"
+    if not segments_dir.is_dir():
+        return 0
+    return len([
+        p for p in segments_dir.glob("segment_*.mkv")
+        if p.is_file() and p.stat().st_size > 0
+    ])
+
+
+def _remove_path_tree(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        log.warning("failed to remove path %s: %s", path, exc)
+
+
+def _cleanup_interrupted_batch_artifacts(
+    job_id: str,
+    batch_idx: int,
+    *,
+    ramdisk_path: Path | None,
+) -> None:
+    """Drop partial RAM-disk state and any incomplete segment for ``batch_idx``."""
+    if ramdisk_path is not None:
+        _remove_path_tree(ramdisk_path / job_id / f"batch_{batch_idx:02d}")
+    partial = jobs_dir() / job_id / "batch_segments" / f"segment_{batch_idx:02d}.mkv"
+    if partial.is_file():
+        try:
+            partial.unlink()
+        except OSError as exc:
+            log.warning("failed to remove partial segment %s: %s", partial, exc)
+
+
+def _crash_resume_stage(job: Job) -> str | None:
+    """Pick a safe resume point after an unclean shutdown."""
+    workdir = jobs_dir() / job.id
+    batches = _load_plan_batches(workdir)
+    current = job.current_stage
+    try:
+        settings = load_settings()
+        ramdisk_path = (
+            Path(settings.paths.ramdisk_path) if settings.paths.ramdisk_path else None
+        )
+    except Exception:
+        ramdisk_path = None
+
+    if batches is not None:
+        completed = _count_completed_batch_segments(workdir)
+        if completed < len(batches) and (current is None or current in _PER_BATCH_STAGE_NAMES):
+            _cleanup_interrupted_batch_artifacts(
+                job.id,
+                completed,
+                ramdisk_path=ramdisk_path,
+            )
+            return "04_decode_serve"
+
+    return current or job.resume_from_stage
+
+
+def _sync_batch_progress(job: Job) -> None:
+    workdir = jobs_dir() / job.id
+    batches = _load_plan_batches(workdir)
+    if batches is None:
+        return
+    plan = dict(job.plan or {})
+    plan["batch_progress"] = {
+        "done": _count_completed_batch_segments(workdir),
+        "total": len(batches),
+    }
+    job.plan = plan
+
+
+def recover_orphaned_running_job(job: Job) -> None:
+    """Re-queue a ``RUNNING`` row left behind by a crash or abrupt shutdown."""
+    resume_stage = _crash_resume_stage(job)
+    log.warning(
+        "recovering orphaned running job %s (was stage=%s) → resume_from=%s",
+        job.id,
+        job.current_stage,
+        resume_stage,
+    )
+    job.state = JobState.QUEUED
+    job.error = None
+    job.finished_at = None
+    job.resume_from_stage = resume_stage
+    job.current_stage = None
+    _sync_batch_progress(job)
 
 
 # Hard upper bound on concurrent jobs regardless of what settings say.
@@ -371,15 +544,11 @@ class JobBroker:
         end_s = terminal_end_s if terminal_end_s is not None else time.time()
         if end_s <= start_s:
             return 0.0
-        with self._queue_timing_lock:
-            pause_windows = list(self._queue_pause_windows)
-        paused_overlap_s = 0.0
-        for pause_start_s, pause_end_s in pause_windows:
-            overlap_start_s = max(start_s, pause_start_s)
-            overlap_end_s = min(end_s, pause_end_s if pause_end_s is not None else end_s)
-            if overlap_end_s > overlap_start_s:
-                paused_overlap_s += overlap_end_s - overlap_start_s
-        return max(0.0, end_s - start_s - paused_overlap_s)
+        paused_s = _runtime_paused_accum_s(job)
+        pause_started_s = _runtime_pause_started_at_s(job)
+        if pause_started_s is not None and end_s > pause_started_s:
+            paused_s += end_s - pause_started_s
+        return max(0.0, end_s - start_s - paused_s)
 
     def resume(self, job_id: str) -> None:
         with self._active_lock:
@@ -388,6 +557,7 @@ class JobBroker:
             ctx.pause_event.clear()
             job = get_job(job_id)
             if job:
+                _runtime_mark_resumed(job, _now())
                 job.state = JobState.RUNNING
                 update_job(job)
                 self._publish(job)
@@ -397,6 +567,7 @@ class JobBroker:
             return
         if job.current_stage:
             job.resume_from_stage = job.current_stage
+        _runtime_mark_resumed(job, _now())
         job.state = JobState.QUEUED
         job.error = None
         job.finished_at = None
@@ -439,8 +610,10 @@ class JobBroker:
             "broker starting with max_concurrent_jobs=%d queue_paused=%s",
             n, self._queue_paused,
         )
+        self._sweep_orphaned_running_jobs()
         self._thread = threading.Thread(target=self._loop, name="aep-broker", daemon=True)
         self._thread.start()
+        self._wake.set()
 
     def stop(self, *, timeout: float = 5.0) -> None:
         self._stop.set()
@@ -459,6 +632,18 @@ class JobBroker:
 
     def jobs(self) -> list[Job]:
         return list_jobs()
+
+    def _sweep_orphaned_running_jobs(self) -> None:
+        """Re-queue in-flight jobs that have no live worker after a restart."""
+        for job in list_jobs():
+            if job.state != JobState.RUNNING:
+                continue
+            with self._active_lock:
+                if job.id in self._active:
+                    continue
+            recover_orphaned_running_job(job)
+            update_job(job)
+            self._publish(job)
 
     # ----- worker loop --------------------------------------------------
 
@@ -496,7 +681,10 @@ class JobBroker:
             # Transition to RUNNING immediately so the next loop iteration's
             # next_queued() won't pick this same row up again.
             job.state = JobState.RUNNING
-            job.started_at = _now()
+            now_iso = _now()
+            if job.started_at is None:
+                job.started_at = now_iso
+            _runtime_mark_resumed(job, now_iso)
             job.error = None
             job.current_stage = None
             update_job(job)
@@ -505,8 +693,7 @@ class JobBroker:
                 self._pool.submit(self._worker_entry, job)
             except RuntimeError:
                 # Pool was shut down between our checks — release slot and
-                # exit cleanly; the job stays in RUNNING state but will be
-                # picked back up next start (TODO: add a startup sweeper).
+                # exit cleanly; start()'s orphan sweeper re-queues the row.
                 self._slots.release()
                 break
         log.info("broker loop exited")
@@ -644,6 +831,7 @@ class JobBroker:
             job.state = JobState.PAUSED
             job.error = None
             job.resume_from_stage = job.current_stage
+            _runtime_mark_paused(job, _now())
             update_job(job)
             self._publish(job)
         except CancelledError:

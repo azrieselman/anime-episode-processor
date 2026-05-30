@@ -15,7 +15,11 @@ from unittest.mock import patch
 
 import pytest
 
-from aep.jobs.broker import _MAX_CONCURRENCY_HARD_CAP, JobBroker
+from aep.jobs.broker import (
+    _MAX_CONCURRENCY_HARD_CAP,
+    _runtime_mark_resumed,
+    JobBroker,
+)
 from aep.jobs.models import Job, JobState
 from aep.jobs.queue import get_job, insert_job, update_job
 from aep.persist.db import init_db
@@ -363,7 +367,7 @@ def test_queue_active_elapsed_excludes_current_pause_window() -> None:
     assert elapsed == pytest.approx(30.0)
 
 
-def test_job_active_elapsed_subtracts_overlapping_queue_pauses() -> None:
+def test_job_active_elapsed_subtracts_job_pause_windows() -> None:
     job = Job(
         source_path="/data/overlap.mkv",
         output_path=None,
@@ -371,17 +375,63 @@ def test_job_active_elapsed_subtracts_overlapping_queue_pauses() -> None:
         started_at=_iso(1000.0),
         finished_at=_iso(1020.0),
     )
+    job.plan = {
+        "__runtime": {
+            "paused_accum_s": 7.0,
+            "pause_started_at": _iso(1018.0),
+        },
+    }
     insert_job(job)
     # insert_job writes timestamps/rows at creation time; persist updated fields.
     update_job(job)
 
     broker = JobBroker()
-    broker._queue_pause_windows = [
-        (1005.0, 1010.0),  # overlap 5s
-        (1015.0, 1025.0),  # overlap 5s (clamped by job end)
-    ]
     elapsed = broker.get_job_active_elapsed_s(job.id)
-    assert elapsed == pytest.approx(10.0)
+    # Total wall: 20s. Runtime metadata says 7s paused + 2s active pause window.
+    assert elapsed == pytest.approx(11.0)
+
+
+def test_resume_inactive_paused_job_clears_pause_metadata_before_queue() -> None:
+    """Resuming a PAUSED row (worker already exited) must not leave pause_started_at set.
+
+    Otherwise the dispatcher's later _runtime_mark_resumed would count queue wait
+    time as paused time.
+    """
+    job = Job(
+        source_path="/data/paused.mkv",
+        output_path=None,
+        preset_id="anime_balanced",
+        state=JobState.PAUSED,
+        started_at=_iso(1000.0),
+        current_stage="05_upscale",
+    )
+    job.plan = {
+        "__runtime": {
+            "paused_accum_s": 0.0,
+            "pause_started_at": _iso(1010.0),
+        },
+    }
+    insert_job(job)
+    update_job(job)
+
+    broker = JobBroker()
+    with patch("aep.jobs.broker._now", return_value=_iso(1015.0)):
+        broker.resume(job.id)
+
+    loaded = get_job(job.id)
+    assert loaded is not None
+    assert loaded.state == JobState.QUEUED
+    assert loaded.resume_from_stage == "05_upscale"
+    runtime = loaded.plan["__runtime"]
+    assert runtime["pause_started_at"] is None
+    assert runtime["paused_accum_s"] == pytest.approx(5.0)
+
+    # Dispatcher transition must not add queue-wait time to paused_accum_s.
+    _runtime_mark_resumed(loaded, _iso(1050.0))
+    update_job(loaded)
+    loaded = get_job(job.id)
+    assert loaded is not None
+    assert loaded.plan["__runtime"]["paused_accum_s"] == pytest.approx(5.0)
 
 
 def test_job_active_elapsed_returns_none_before_job_start() -> None:

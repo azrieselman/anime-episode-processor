@@ -251,6 +251,8 @@ class MuxStage(BaseStage):
             "-f", "concat",
             "-safe", "0",
             "-i", str(list_path),
+            "-fflags", "+genpts",
+            "-avoid_negative_ts", "make_zero",
             "-map", "0:v:0",
             "-c", "copy",
             "-map_metadata", "-1",

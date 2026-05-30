@@ -721,7 +721,10 @@ def _plan_video_batches(
     if bcfg.boundary_policy == "keyframe":
         try:
             kf_adapter = FFProbeAdapter()
-            keyframes = kf_adapter.list_video_keyframes(media.fmt.filename)
+            keyframes = kf_adapter.list_video_keyframes(
+                media.fmt.filename,
+                duration_s=float(duration),
+            )
             log.info("batch planner: probed %d keyframes", len(keyframes))
         except Exception as exc:
             log.warning(

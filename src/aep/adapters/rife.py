@@ -279,33 +279,32 @@ def expected_output_count(total_input_frames: int, multiplier: int, scene_cut_co
 def local_cuts_from_global(
     global_cuts: Iterable[int],
     *,
-    batch_offset: int,
+    batch_offset: int | None = None,
+    rife_input_base: int | None = None,
     in_count: int,
 ) -> list[int]:
     """Translate global source-frame cut indices into batch-local input frame indices.
 
     `global_cuts` are 0-based source-frame indices (the form `ctx.scene_cuts`
-    holds). `batch_offset` is the source-frame index of the batch's first
-    decoded frame (0 in single-pass mode). `in_count` is the batch's local
-    input frame count.
+    holds). ``rife_input_base`` (or legacy ``batch_offset``) is the global index
+    of local input frame 1 — for batched RIFE with overlap context this is one
+    frame *before* the batch's first content frame. ``in_count`` is the number
+    of RIFE input frames (including overlap).
 
     A cut at global index `g` is rewritten to local 1-based input index
-    ``g - batch_offset + 1`` so the math in ``morphed_output_range`` stays in
-    1-based input numbering. Cuts at the very first input frame (local == 1)
-    or at/past the last input frame (local > in_count) are dropped: there is
-    no morphed region inside the batch for them, and they're the cases that
-    used to trigger the 1-frame-run failure in the per-run path.
+    ``g - base + 1``. Cuts at local 1 (no prior input in this RIFE run) or
+    past ``in_count`` are dropped.
 
     The result is sorted and deduped.
     """
+    base = rife_input_base if rife_input_base is not None else batch_offset
+    if base is None:
+        base = 0
     if in_count <= 0:
         return []
     seen: set[int] = set()
     for g in global_cuts:
-        local = int(g) - int(batch_offset) + 1
-        # Local 1 means "input frame 1 starts a new scene" — the previous
-        # scene has zero frames in this batch, nothing to splice.
-        # Local > in_count means the cut is past this batch's tail.
+        local = int(g) - int(base) + 1
         if 2 <= local <= in_count:
             seen.add(local)
     return sorted(seen)

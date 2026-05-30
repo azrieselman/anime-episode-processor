@@ -71,6 +71,8 @@ def test_concat_list_format_and_argv(tmp_path: Path) -> None:
     assert "-safe" in cmd and cmd[cmd.index("-safe") + 1] == "0"
     assert "-c" in cmd and cmd[cmd.index("-c") + 1] == "copy"
     assert str(seg_dir / "concat.txt") in cmd
+    assert "+genpts" in cmd
+    assert "make_zero" in cmd
 
 
 def test_concat_idempotent_when_output_fresh(tmp_path: Path) -> None:

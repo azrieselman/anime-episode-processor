@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -232,3 +233,115 @@ def test_broker_cancel_completed_is_noop(tmp_runtime: Path, tmp_path: Path) -> N
     assert loaded is not None
     assert loaded.state == JobState.COMPLETED
     assert loaded.finished_at == "2020-01-01T00:00:00+00:00"
+
+
+def test_recover_orphaned_batched_job_restarts_interrupted_batch(
+    tmp_runtime: Path, tmp_path: Path,
+) -> None:
+    """After a crash mid-batch, resume from 04_decode_serve at the interrupted batch."""
+    init_db()
+    from aep.jobs.broker import JobBroker, recover_orphaned_running_job
+    from aep.util.paths import jobs_dir
+
+    job = Job(source_path=str(tmp_path / "in.mkv"))
+    job.state = JobState.RUNNING
+    job.current_stage = "06_interpolate"
+    insert_job(job)
+
+    workdir = jobs_dir() / job.id
+    plan_dir = workdir / "01_plan"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    (plan_dir / "plan.json").write_text(
+        json.dumps({
+            "batches": [
+                {"index": 0, "start_pts": 0.0, "end_pts": 30.0},
+                {"index": 1, "start_pts": 30.0, "end_pts": 60.0},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    seg_dir = workdir / "batch_segments"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    (seg_dir / "segment_00.mkv").write_bytes(b"done")
+    # No segment_01 yet — batch 1 was interrupted mid-pipeline.
+
+    ramdisk = tmp_path / "ramdisk"
+    batch_dir = ramdisk / job.id / "batch_01" / "06_interpolate"
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    (batch_dir / "frame.txt").write_text("x", encoding="utf-8")
+
+    with patch(
+        "aep.jobs.broker.load_settings",
+        return_value=AppSettings.model_validate({
+            "paths": {"ramdisk_path": str(ramdisk)},
+        }),
+    ):
+        recover_orphaned_running_job(job)
+        update_job(job)
+
+    loaded = get_job(job.id)
+    assert loaded is not None
+    assert loaded.state == JobState.QUEUED
+    assert loaded.resume_from_stage == "04_decode_serve"
+    assert loaded.current_stage is None
+    assert loaded.plan.get("batch_progress") == {"done": 1, "total": 2}
+    assert not (seg_dir / "segment_01.mkv").exists()
+    assert not (ramdisk / job.id / "batch_01").exists()
+
+
+def test_recover_orphaned_non_batched_job_resumes_current_stage(
+    tmp_runtime: Path, tmp_path: Path,
+) -> None:
+    init_db()
+    from aep.jobs.broker import recover_orphaned_running_job
+
+    job = Job(source_path=str(tmp_path / "in.mkv"))
+    job.state = JobState.RUNNING
+    job.current_stage = "05_upscale"
+    insert_job(job)
+
+    recover_orphaned_running_job(job)
+    update_job(job)
+
+    loaded = get_job(job.id)
+    assert loaded is not None
+    assert loaded.state == JobState.QUEUED
+    assert loaded.resume_from_stage == "05_upscale"
+
+
+def test_broker_start_sweeps_orphaned_running_jobs(
+    tmp_runtime: Path, tmp_path: Path,
+) -> None:
+    init_db()
+    import threading
+    import time
+    from unittest.mock import patch
+
+    from aep.jobs.broker import JobBroker
+
+    job = Job(source_path=str(tmp_path / "in.mkv"))
+    job.state = JobState.RUNNING
+    job.current_stage = "01_plan"
+    insert_job(job)
+
+    done = threading.Event()
+
+    def fake_run_one(self, j):
+        done.set()
+        time.sleep(0.05)
+
+    broker = JobBroker()
+    settings = AppSettings()
+    settings.general.auto_start_jobs = True
+    with patch("aep.jobs.broker.load_settings", return_value=settings), patch.object(
+        JobBroker, "_run_one", fake_run_one,
+    ):
+        broker.start()
+        try:
+            assert done.wait(timeout=5.0), "recovered job was not dispatched"
+        finally:
+            broker.stop(timeout=2.0)
+
+    loaded = get_job(job.id)
+    assert loaded is not None
+    assert loaded.state in (JobState.RUNNING, JobState.COMPLETED)
