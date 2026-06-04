@@ -52,6 +52,10 @@ class StreamInfo(BaseModel):
     avg_frame_rate: str | None = None       # "24000/1001"
     r_frame_rate: str | None = None
     nb_frames: int | None = None
+    # Demux-derived end of the last video packet (PTS + duration). Unlike
+    # duration_s / nb_frames from ffprobe -show_streams, this reflects packets
+    # actually present in the file (bad encodes often inflate container duration).
+    decodable_end_s: float | None = None
     sar: str | None = None                  # "1:1"
     dar: str | None = None                  # "16:9"
     bits_per_raw_sample: int | None = None

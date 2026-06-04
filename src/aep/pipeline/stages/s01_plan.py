@@ -47,6 +47,8 @@ from aep.errors import PipelineError
 from aep.mux.mapping import decide_mux_tool, plan_streams
 from aep.persist.presets import Preset
 from aep.persist.settings import PipelineOrder
+from aep.media.extent import enrich_media_decodable_extent
+from aep.pipeline.batch_timing import resolve_planning_duration_s
 from aep.pipeline.batches import BatchSpec, plan_batches
 from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.context import PipelineContext
@@ -98,6 +100,9 @@ class PlanStage(BaseStage):
         media = ctx.media_info
         if media is None:  # defensive — plan() already validated this
             raise PipelineError("01_plan: ctx.media_info missing")
+
+        media = enrich_media_decodable_extent(media, ctx.source_path)
+        ctx.media_info = media
 
         preset = Preset.model_validate(ctx.preset_data)
         hw = self._get_hardware()
@@ -305,6 +310,16 @@ class PlanStage(BaseStage):
                 "resolved_chunk_seconds": batching_resolve.get("resolved_chunk_seconds"),
                 "free_bytes_at_plan": batching_resolve.get("free_bytes_at_plan"),
                 "auto_unbatched_reason": batching_resolve.get("auto_unbatched_reason"),
+                "format_duration_s": batching_resolve.get("format_duration_s"),
+                "planning_duration_s": batching_resolve.get("planning_duration_s"),
+                "duration_clamped_from_format": batching_resolve.get(
+                    "duration_clamped_from_format",
+                ),
+                "decodable_end_s": (
+                    media.primary_video.decodable_end_s
+                    if media.primary_video is not None
+                    else None
+                ),
             },
         }
         ctx.plan = plan_doc
@@ -405,7 +420,7 @@ def _estimate_frame_bytes(
     # Frame count: prefer probed nb_frames, else duration*fps.
     frames: int | None = primary.nb_frames
     if not frames:
-        dur = media.fmt.duration_s if media.fmt else None
+        dur = resolve_planning_duration_s(media)
         fps = parse_rational(primary.r_frame_rate) or parse_rational(primary.avg_frame_rate)
         if dur and fps and fps > 0:
             frames = int(float(fps) * float(dur))
@@ -697,7 +712,17 @@ def _plan_video_batches(
         "auto_unbatched_reason": None,
     }
 
-    duration = media.fmt.duration_s if media.fmt else None
+    format_duration = media.fmt.duration_s if media.fmt else None
+    duration = resolve_planning_duration_s(media)
+    meta["format_duration_s"] = format_duration
+    meta["planning_duration_s"] = duration
+    if format_duration and duration and duration < float(format_duration) - 0.05:
+        meta["duration_clamped_from_format"] = True
+        log.warning(
+            "batch planner: using planning duration %.3fs (container reports %.3fs)",
+            duration,
+            format_duration,
+        )
     if not duration or duration <= 0:
         log.warning("batch planner: source duration unknown; falling back to unbatched mode")
         meta["auto_unbatched_reason"] = "duration_unknown"
@@ -732,6 +757,8 @@ def _plan_video_batches(
                 exc,
             )
             keyframes = []
+        if keyframes:
+            keyframes = [kf for kf in keyframes if kf <= float(duration) + 0.001]
 
     kf_arg: list[float] | None = keyframes if keyframes else None
 

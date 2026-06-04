@@ -11,6 +11,7 @@ from aep.adapters.ffprobe import (
     FFProbeAdapter,
     keyframe_probe_timeout,
     parse_keyframe_packets_compact,
+    parse_video_packets_compact,
 )
 from aep.util.proc import ProcResult
 
@@ -19,7 +20,8 @@ pts_time=0.000000|flags=K__
 pts_time=0.042000|flags=___
 pts_time=2.000000|flags=K__
 pkt_pts_time=4.000000|flags=K__
-pts_time=6.000000|flags=K__
+pts_time=6.000000|flags=K__|pkt_duration_time=0.042000
+pts_time=8.000000|flags=___|pkt_duration_time=0.500000
 """
 
 
@@ -40,6 +42,13 @@ def test_parse_keyframe_packets_compact() -> None:
 
 def test_parse_keyframe_packets_compact_empty() -> None:
     assert parse_keyframe_packets_compact("") == []
+
+
+def test_parse_video_packets_compact_tracks_last_end() -> None:
+    extent = parse_video_packets_compact(SAMPLE_COMPACT)
+    assert extent.keyframe_times_s == [0.0, 2.0, 4.0, 6.0]
+    assert extent.last_pts_s == pytest.approx(8.0)
+    assert extent.last_end_s == pytest.approx(8.5)
 
 
 def test_list_video_keyframes_uses_packet_probe(tmp_path: Path) -> None:

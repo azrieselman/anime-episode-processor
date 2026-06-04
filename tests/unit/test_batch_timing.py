@@ -19,8 +19,10 @@ from aep.pipeline.batch_timing import (
     merge_batch_frame_plan_into_decode,
     reconcile_batch_decode_outputs,
     resolve_batch_frame_plan,
+    resolve_planning_duration_s,
     trim_frames_dir,
 )
+from aep.media.models import FormatInfo, MediaInfo, StreamInfo
 from aep.pipeline.context import PipelineContext
 from aep.util.fps import total_frames
 
@@ -44,6 +46,73 @@ def test_expected_content_frames_uses_cumulative_indices() -> None:
     )
     assert by_indices == total_frames(fps, end) - total_frames(fps, start)
     assert by_duration - by_indices == 1
+
+
+def test_resolve_planning_duration_clamps_inflated_format() -> None:
+    actual_s = 23 * 60 + 40  # 23:40
+    inflated_s = 25 * 60  # 25:00
+    primary = StreamInfo(
+        index=0,
+        kind="video",
+        avg_frame_rate="24/1",
+        r_frame_rate="24/1",
+        duration_s=float(inflated_s),
+        nb_frames=int(inflated_s * 24),
+        decodable_end_s=float(actual_s),
+    )
+    media = MediaInfo(
+        source_path="/tmp/x.mkv",
+        fmt=FormatInfo(
+            filename="/tmp/x.mkv",
+            format_name="matroska",
+            duration_s=float(inflated_s),
+        ),
+        streams=[primary],
+    )
+    assert resolve_planning_duration_s(media) == pytest.approx(float(actual_s))
+
+
+def test_resolve_planning_duration_extends_understated_format() -> None:
+    actual_s = 1420.0
+    understated_s = 1400.0
+    primary = StreamInfo(
+        index=0,
+        kind="video",
+        avg_frame_rate="24/1",
+        r_frame_rate="24/1",
+        duration_s=float(actual_s),
+        nb_frames=int(actual_s * 24),
+    )
+    media = MediaInfo(
+        source_path="/tmp/x.mkv",
+        fmt=FormatInfo(
+            filename="/tmp/x.mkv",
+            format_name="matroska",
+            duration_s=float(understated_s),
+        ),
+        streams=[primary],
+    )
+    assert resolve_planning_duration_s(media) == pytest.approx(float(actual_s))
+
+
+def test_resolve_planning_duration_falls_back_to_format() -> None:
+    media = MediaInfo(
+        source_path="/tmp/x.mkv",
+        fmt=FormatInfo(
+            filename="/tmp/x.mkv",
+            format_name="matroska",
+            duration_s=1500.0,
+        ),
+        streams=[
+            StreamInfo(
+                index=0,
+                kind="video",
+                avg_frame_rate="24/1",
+                r_frame_rate="24/1",
+            ),
+        ],
+    )
+    assert resolve_planning_duration_s(media) == pytest.approx(1500.0)
 
 
 def test_expected_content_frames_capped_by_source_total() -> None:

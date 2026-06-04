@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from aep.adapters.ffprobe import FFProbeAdapter
+from aep.media.extent import enrich_media_decodable_extent
 from aep.media.ffprobe import FfprobeAnalyzer
 from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.context import PipelineContext
@@ -57,6 +58,7 @@ class ProbeStage(BaseStage):
         t0 = time.monotonic()
         analyzer = FfprobeAnalyzer(self._ffprobe)
         info = analyzer.analyze(ctx.source_path)
+        info = enrich_media_decodable_extent(info, ctx.source_path, ffprobe=self._ffprobe)
         ctx.media_info = info
 
         out_path: Path = plan.outputs[0]
@@ -84,5 +86,10 @@ class ProbeStage(BaseStage):
                 "chapters": len(info.chapters),
                 "is_matroska": info.is_matroska,
                 "duration_s": info.fmt.duration_s,
+                "decodable_end_s": (
+                    info.primary_video.decodable_end_s
+                    if info.primary_video is not None
+                    else None
+                ),
             },
         )

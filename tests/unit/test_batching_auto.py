@@ -157,6 +157,66 @@ def test_auto_resolves_batches_when_tight_space(
     assert meta.get("resolved_chunk_seconds", 999) <= 600
 
 
+def test_plan_batches_clamp_inflated_container_duration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actual_s = 23 * 60 + 40
+    inflated_s = 25 * 60
+    primary = StreamInfo(
+        index=0,
+        kind="video",
+        codec_name="h264",
+        pix_fmt="yuv420p",
+        avg_frame_rate="24/1",
+        r_frame_rate="24/1",
+        width=1280,
+        height=720,
+        duration_s=float(inflated_s),
+        nb_frames=int(inflated_s * 24),
+        decodable_end_s=float(actual_s),
+    )
+    media = MediaInfo(
+        source_path="/tmp/x.mkv",
+        fmt=FormatInfo(
+            filename="/tmp/x.mkv",
+            format_name="matroska",
+            duration_s=float(inflated_s),
+        ),
+        streams=[primary],
+        is_matroska=True,
+    )
+    preset = _small_preset(
+        batching=BatchingCfg(
+            mode="manual",
+            enabled=True,
+            chunk_seconds=600,
+            boundary_policy="exact",
+        ),
+    )
+    ctx = _ctx(tmp_path, ramdisk=True)
+    m3, _w, _r = _plan_m3_video_path(
+        preset, media, primary, decode_hwaccel=_resolve_decode_hwaccel("off"),
+    )
+    tw, th = _resolve_target_geometry(preset, media)
+    est = _estimate_frame_bytes(media=media, target_w=tw, target_h=th, m3_plan=m3)
+
+    batches, meta = _plan_video_batches(
+        ctx=ctx,
+        preset=preset,
+        media=media,
+        primary=primary,
+        target_w=tw,
+        target_h=th,
+        m3_plan=m3,
+        ramdisk_estimate=est,
+    )
+    assert meta.get("duration_clamped_from_format") is True
+    assert meta.get("planning_duration_s") == pytest.approx(float(actual_s))
+    assert batches
+    assert batches[-1].end_pts == pytest.approx(float(actual_s))
+    assert batches[-1].end_pts < float(inflated_s)
+
+
 def test_auto_resolves_batches_when_m3_output_fps_unset_but_nb_frames_known(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

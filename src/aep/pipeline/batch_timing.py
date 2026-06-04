@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
+from aep.media.models import MediaInfo
 from aep.pipeline.context import PipelineContext
 from aep.util.fps import parse_rational, total_frames
 
@@ -67,16 +68,96 @@ def source_fps_from_context(ctx: PipelineContext) -> Fraction | None:
     return parse_rational(primary.avg_frame_rate) or parse_rational(primary.r_frame_rate)
 
 
+def _positive_duration(value: float | None) -> float | None:
+    if value is None or value <= 0:
+        return None
+    return float(value)
+
+
+def _frame_derived_duration_s(primary: object | None) -> float | None:
+    if primary is None:
+        return None
+    fps = parse_rational(getattr(primary, "avg_frame_rate", None)) or parse_rational(
+        getattr(primary, "r_frame_rate", None),
+    )
+    nb_frames = getattr(primary, "nb_frames", None)
+    if nb_frames is None or nb_frames <= 0 or fps is None or fps <= 0:
+        return None
+    return float(nb_frames) / float(fps)
+
+
+def resolve_planning_duration_s(media: MediaInfo) -> float | None:
+    """Seconds of decodable primary video for batch/scene planning.
+
+    Container and ``-show_streams`` metadata are often wrong for bad encodes; when
+    ``primary.decodable_end_s`` was set by a packet demux probe (see
+    :func:`aep.media.extent.enrich_media_decodable_extent`), that value wins.
+    Otherwise fall back to the shortest of stream duration and ``nb_frames``/fps.
+    """
+    fmt_dur = _positive_duration(media.fmt.duration_s if media.fmt is not None else None)
+    primary = media.primary_video
+    decodable_end = _positive_duration(
+        primary.decodable_end_s if primary is not None else None,
+    )
+    if decodable_end is not None:
+        if fmt_dur is not None and fmt_dur > decodable_end + 0.05:
+            log.warning(
+                "planning duration clamped using demuxed packet extent: "
+                "format=%.3fs, decodable_end=%.3fs",
+                fmt_dur,
+                decodable_end,
+            )
+            return decodable_end
+        if fmt_dur is not None and fmt_dur < decodable_end - 0.05:
+            log.warning(
+                "planning duration extended using demuxed packet extent: "
+                "format=%.3fs, decodable_end=%.3fs",
+                fmt_dur,
+                decodable_end,
+            )
+            return decodable_end
+        return decodable_end
+
+    stream_dur = _positive_duration(primary.duration_s if primary is not None else None)
+    frame_dur = _frame_derived_duration_s(primary)
+
+    trusted_bounds = [d for d in (stream_dur, frame_dur) if d is not None]
+    if trusted_bounds:
+        trusted = min(trusted_bounds) if len(trusted_bounds) > 1 else trusted_bounds[0]
+        if fmt_dur is not None and fmt_dur > trusted + 0.05:
+            log.warning(
+                "planning duration clamped from stream metadata: "
+                "format=%.3fs, trusted=%.3fs",
+                fmt_dur,
+                trusted,
+            )
+            return trusted
+        if fmt_dur is not None and fmt_dur < trusted - 0.05:
+            log.warning(
+                "planning duration extended past understated container metadata: "
+                "format=%.3fs, trusted=%.3fs",
+                fmt_dur,
+                trusted,
+            )
+            return max(trusted_bounds)
+        return trusted
+
+    return fmt_dur
+
+
 def source_frame_count_from_context(ctx: PipelineContext) -> int | None:
-    """Best-effort total source frame count (nb_frames probe, else duration × fps)."""
+    """Best-effort total source frame count (demux extent, else nb_frames, else duration × fps)."""
     media = ctx.media_info
     if media is None:
         return None
     primary = media.primary_video
+    fps = source_fps_from_context(ctx)
+    if primary is not None and primary.decodable_end_s is not None and primary.decodable_end_s > 0:
+        if fps is not None and fps > 0:
+            return total_frames(fps, float(primary.decodable_end_s))
     if primary is not None and primary.nb_frames is not None and primary.nb_frames > 0:
         return int(primary.nb_frames)
-    fps = source_fps_from_context(ctx)
-    dur = media.fmt.duration_s if media.fmt is not None else None
+    dur = resolve_planning_duration_s(media)
     if fps is not None and fps > 0 and dur is not None and dur > 0:
         return total_frames(fps, float(dur))
     return None
