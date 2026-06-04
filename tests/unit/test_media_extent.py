@@ -11,7 +11,6 @@ from aep.adapters.ffprobe import VideoPacketExtent, parse_video_packets_compact
 from aep.media.extent import decodable_end_from_extent, enrich_media_decodable_extent
 from aep.media.models import FormatInfo, MediaInfo, StreamInfo
 from aep.pipeline.batch_timing import resolve_planning_duration_s
-from aep.util.proc import ProcResult
 
 SAMPLE = """\
 pts_time=0.000000|flags=K__|pkt_duration_time=0.042000

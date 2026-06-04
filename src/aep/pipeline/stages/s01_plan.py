@@ -44,10 +44,10 @@ from aep.adapters.waifu2x import Waifu2xAdapter
 from aep.bench.hardware import HardwareProfile, probe_hardware
 from aep.encode.recommender import recommend
 from aep.errors import PipelineError
+from aep.media.extent import enrich_media_decodable_extent
 from aep.mux.mapping import decide_mux_tool, plan_streams
 from aep.persist.presets import Preset
 from aep.persist.settings import PipelineOrder
-from aep.media.extent import enrich_media_decodable_extent
 from aep.pipeline.batch_timing import resolve_planning_duration_s
 from aep.pipeline.batches import BatchSpec, plan_batches
 from aep.pipeline.cache import compute_cache_key

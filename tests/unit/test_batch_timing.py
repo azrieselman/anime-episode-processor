@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from aep.adapters.rife import local_cuts_from_global
+from aep.media.models import FormatInfo, MediaInfo, StreamInfo
 from aep.pipeline.batch_timing import (
     BatchFramePlan,
     batch_frame_plan_for_actual_decode,
@@ -22,7 +23,6 @@ from aep.pipeline.batch_timing import (
     resolve_planning_duration_s,
     trim_frames_dir,
 )
-from aep.media.models import FormatInfo, MediaInfo, StreamInfo
 from aep.pipeline.context import PipelineContext
 from aep.util.fps import total_frames
 
