@@ -129,13 +129,17 @@ class SettingsView(QWidget):
 
         hw = QGroupBox("Hardware")
         hf = QFormLayout(hw)
-        self._prefer_nvenc = QCheckBox("Prefer NVENC when sensible")
-        hf.addRow("", self._prefer_nvenc)
+        self._prefer_hardware_encoder = QCheckBox("Prefer GPU hardware encoding when available")
+        hf.addRow("", self._prefer_hardware_encoder)
         self._decode_hwaccel = QComboBox()
         self._decode_hwaccel.addItem("Auto (D3D11VA on Windows)", "auto")
         self._decode_hwaccel.addItem("Off (software decode)", "off")
         self._decode_hwaccel.addItem("DirectX D3D11VA", "d3d11va")
         self._decode_hwaccel.addItem("NVIDIA NVDEC (CUDA)", "cuda")
+        self._decode_hwaccel.addItem("AMD AMF", "amf")
+        self._decode_hwaccel.setToolTip(
+            "Used as the global default when a preset keeps decode.hwaccel set to Auto."
+        )
         hf.addRow("Decode acceleration:", self._decode_hwaccel)
         self._max_jobs = QSpinBox()
         self._max_jobs.setRange(1, 4)
@@ -284,7 +288,7 @@ class SettingsView(QWidget):
         self._auto_retry_failed_job_attempts.setValue(s.general.auto_retry_failed_job_attempts)
         self._sync_auto_retry_controls()
         self._show_queue_job_id.setChecked(s.general.show_queue_job_id_column)
-        self._prefer_nvenc.setChecked(s.hardware.prefer_nvenc)
+        self._prefer_hardware_encoder.setChecked(s.hardware.prefer_hardware_encoder)
         idx = self._decode_hwaccel.findData(s.hardware.decode_hwaccel)
         self._decode_hwaccel.setCurrentIndex(idx if idx >= 0 else 0)
         self._max_jobs.setValue(s.hardware.max_concurrent_jobs)
@@ -318,7 +322,7 @@ class SettingsView(QWidget):
         s.general.auto_retry_failed_jobs = self._auto_retry_failed_jobs.isChecked()
         s.general.auto_retry_failed_job_attempts = self._auto_retry_failed_job_attempts.value()
         s.general.show_queue_job_id_column = self._show_queue_job_id.isChecked()
-        s.hardware.prefer_nvenc = self._prefer_nvenc.isChecked()
+        s.hardware.prefer_hardware_encoder = self._prefer_hardware_encoder.isChecked()
         s.hardware.decode_hwaccel = str(self._decode_hwaccel.currentData())  # type: ignore[assignment]
         s.hardware.max_concurrent_jobs = self._max_jobs.value()
         s.hardware.ring_buffer_frames = self._ring_frames.value()

@@ -11,7 +11,7 @@ from aep.persist.settings import AppSettings
 log = logging.getLogger(__name__)
 
 # Bump when first-run logic changes so upgrades can re-evaluate once.
-HARDWARE_ENCODER_DEFAULTS_VERSION = 1
+HARDWARE_ENCODER_DEFAULTS_VERSION = 2
 
 
 def apply_hardware_encoder_defaults(settings: AppSettings) -> AppSettings:
@@ -53,7 +53,8 @@ def apply_hardware_encoder_defaults(settings: AppSettings) -> AppSettings:
         return settings.model_copy(update={"hardware_encoder_defaults_version": new_ver})
 
     updated_encoder = preset.encoder.model_copy(update={"name": target})  # type: ignore[arg-type]
-    overlay = preset.model_copy(update={"encoder": updated_encoder})
+    updated_decode = preset.decode.model_copy(update={"hwaccel": "auto"})
+    overlay = preset.model_copy(update={"encoder": updated_encoder, "decode": updated_decode})
     try:
         save_user_preset(overlay)
         log.info(

@@ -58,6 +58,7 @@ from aep.gui.preset_design import PresetDesignerView
 from aep.gui.views.job_config_view import JobConfigView
 from aep.gui.views.logs_view import LogsView
 from aep.gui.views.queue_view import QueueView
+from aep.gui.views.ramdisk_view import RamDiskView
 from aep.gui.views.settings_view import SettingsView
 from aep.gui.views.stream_inspector_view import StreamInspectorView
 from aep.gui.widgets.first_run_dialog import FirstRunDialog
@@ -157,8 +158,8 @@ class MainWindow(QMainWindow):
         about_act.triggered.connect(self._on_about)
         help_menu.addAction(about_act)
 
-        # Ctrl+1 … Ctrl+6 — switch primary views (sidebar order).
-        for i in range(6):
+        # Ctrl+1 … Ctrl+7 — switch primary views (sidebar order).
+        for i in range(7):
             act = QAction(self)
             act.setShortcut(QKeySequence(f"Ctrl+{i + 1}"))
             act.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
@@ -185,6 +186,7 @@ class MainWindow(QMainWindow):
         self._inspector_view = StreamInspectorView(self._services, parent=self)
         self._preset_designer_view = PresetDesignerView(self._services, parent=self)
         self._logs_view = LogsView(parent=self)
+        self._ramdisk_view = RamDiskView(self._services, parent=self)
         self._settings_view = SettingsView(self._services, parent=self)
 
         self._queue_view.selection_changed.connect(self._on_job_selected)
@@ -197,6 +199,7 @@ class MainWindow(QMainWindow):
             ("Stream Inspector", self._inspector_view, "stream-inspector", QStyle.StandardPixmap.SP_FileDialogInfoView),
             ("Preset Designer", self._preset_designer_view, "preset-designer", QStyle.StandardPixmap.SP_FileIcon),
             ("Logs", self._logs_view, "logs", QStyle.StandardPixmap.SP_FileDialogContentsView),
+            ("RamDisk", self._ramdisk_view, "ramdisk", QStyle.StandardPixmap.SP_DriveHDIcon),
             ("Settings", self._settings_view, "settings", QStyle.StandardPixmap.SP_FileDialogListView),
         ]
         for label, widget, slug, spix in nav:

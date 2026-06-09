@@ -2,11 +2,12 @@ meta:
   id: low_vram_safe
   name: Low VRAM Safe
   description: >
-    Tile size capped at 128, lite RIFE, NVENC p4 — avoids OOM on cards with limited
-    free VRAM (e.g. shared GPU usage or 8GB cards).
+    Low-memory-safe profile with tile size capped at 128 and lite RIFE settings.
+    Tuned to reduce OOM risk while keeping consistent defaults across NVENC,
+    QSV, and AMF encoder families.
   builtin: true
   suitable_for: [anime_2d]
-  target_hardware: "8GB VRAM or shared GPU"
+  target_hardware: "8GB VRAM (or less with conservative multitasking)"
 container: mkv
 target_resolution:
   mode: named
@@ -29,19 +30,39 @@ interpolation:
   fp16: true
 encoder:
   name: hevc_nvenc
+  goal: auto
   nvenc_preset: p4
   nvenc_tune: hq
   nvenc_rc: vbr
   nvenc_cq: 22
   nvenc_multipass: qres
+  nvenc_rc_lookahead: 16
   nvenc_spatial_aq: true
   nvenc_temporal_aq: false
   nvenc_bframes: 3
   nvenc_b_ref_mode: middle
+  qsv_preset: medium
+  qsv_global_quality: 24
+  qsv_extbrc: true
+  qsv_look_ahead_depth: 24
+  qsv_bf: 2
+  qsv_low_power: false
+  amf_quality: balanced
+  amf_rc: cqp
+  amf_qp_i: 22
+  amf_qp_p: 22
+  amf_qp_b: 24
+  amf_preanalysis: true
+  amf_vbaq: false
+  amf_g: 200
   x_crf: 21
   x_preset: medium
   x_tune: animation
+  x265_params: aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:rd=4
   extra_args: []
+decode:
+  hwaccel: auto
+  png_intermediate_codec: mjpeg
 streams:
   copy_audio: true
   copy_subtitles: true

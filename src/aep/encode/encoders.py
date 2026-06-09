@@ -115,7 +115,7 @@ def build_nvenc(
         "-temporal_aq", "1" if cfg.nvenc_temporal_aq else "0",
         "-bf", str(cfg.nvenc_bframes),
         "-b_ref_mode", cfg.nvenc_b_ref_mode,
-        "-rc-lookahead", "32",
+        "-rc-lookahead", str(cfg.nvenc_rc_lookahead),
         "-fps_mode", fps_mode,
     ]
     args = _scale_filter_if_needed(target_width, target_height) + args
@@ -184,13 +184,19 @@ def build_qsv(
         "-c:v", codec,
         "-preset", cfg.qsv_preset,
         "-global_quality", str(cfg.qsv_global_quality),
+        "-extbrc", "1" if cfg.qsv_extbrc else "0",
+        "-bf", str(cfg.qsv_bf),
+        "-low_power", "1" if cfg.qsv_low_power else "0",
         "-pix_fmt", pix_fmt,
         "-fps_mode", fps_mode,
     ]
+    if cfg.qsv_extbrc and cfg.qsv_look_ahead_depth > 0:
+        args += ["-look_ahead_depth", str(cfg.qsv_look_ahead_depth)]
     args += list(cfg.extra_args)
     rationale.append(
         f"Intel QSV {family}: preset={cfg.qsv_preset} global_quality={cfg.qsv_global_quality} "
-        f"pix_fmt={pix_fmt}"
+        f"extbrc={int(cfg.qsv_extbrc)} look_ahead_depth={cfg.qsv_look_ahead_depth} "
+        f"bf={cfg.qsv_bf} low_power={int(cfg.qsv_low_power)} pix_fmt={pix_fmt}"
     )
     return EncodeBuildResult(
         args=args,
@@ -198,6 +204,18 @@ def build_qsv(
         rationale=rationale,
         global_prefix=QSV_GLOBAL_PREFIX,
     )
+
+
+def _amf_quality_args(quality: str) -> list[str]:
+    """Map preset ``amf_quality`` to FFmpeg AMF ``-quality`` / ``-usage`` options.
+
+    AMF encoders expose ``-quality`` (speed/balanced/quality), not ``-preset``.
+    ``high_quality`` is a ``-usage`` preset on h264/hevc/av1_amf, not a quality tier.
+    """
+    q = (quality or "balanced").lower()
+    if q == "high_quality":
+        return ["-usage", "high_quality", "-quality", "quality"]
+    return ["-quality", q]
 
 
 def build_amf(
@@ -219,12 +237,19 @@ def build_amf(
             )
     elif family == "hevc":
         codec = "hevc_amf"
-        pix_fmt = PIX_FMT_10BIT if _is_10bit_pix_fmt(source_pix_fmt) else PIX_FMT_8BIT
-        if pix_fmt == PIX_FMT_10BIT:
-            rationale.append("hevc_amf: preserving 10-bit where supported.")
+        # hevc_amf accepts nv12/yuv420p only; 10-bit output is not portable on AMF.
+        pix_fmt = PIX_FMT_8BIT
+        if _is_10bit_pix_fmt(source_pix_fmt):
+            rationale.append(
+                "hevc_amf: source is 10-bit; using 8-bit output (AMF HEVC is Main 8-bit)."
+            )
     elif family == "av1":
         codec = "av1_amf"
-        pix_fmt = PIX_FMT_10BIT if _is_10bit_pix_fmt(source_pix_fmt) else PIX_FMT_8BIT
+        pix_fmt = PIX_FMT_8BIT
+        if _is_10bit_pix_fmt(source_pix_fmt):
+            rationale.append(
+                "av1_amf: source is 10-bit; using 8-bit output for AMF compatibility."
+            )
     else:
         raise ValueError(f"unsupported AMF family: {family}")
 
@@ -239,16 +264,43 @@ def build_amf(
 
     args = vf_prefix + [
         "-c:v", codec,
-        "-quality", cfg.amf_quality,
+        *_amf_quality_args(cfg.amf_quality),
         "-rc", cfg.amf_rc,
+        "-preanalysis", "true" if cfg.amf_preanalysis else "false",
+        "-vbaq", "true" if cfg.amf_vbaq else "false",
+        # Do not set ``-header_insertion_mode idr``: AMF/ffmpeg can hang on later
+        # batched encode invocations (~batch 3+). Each batch is a fresh ffmpeg process
+        # and AMF still emits a keyframe at frame 0 by default.
     ]
+    if cfg.amf_g > 0:
+        args += ["-g", str(cfg.amf_g)]
+    args += ["-bf", str(cfg.amf_bf)]
+    if cfg.amf_pa_lookahead_buffer_depth >= 0:
+        args += [
+            "-pa_lookahead_buffer_depth",
+            str(cfg.amf_pa_lookahead_buffer_depth),
+        ]
+    if cfg.amf_pa_taq_mode >= 0:
+        args += ["-pa_taq_mode", str(cfg.amf_pa_taq_mode)]
     rc_lower = cfg.amf_rc.lower()
     if rc_lower in {"cqp", "constqp", "qp"}:
-        args += ["-qp_i", str(cfg.amf_qp_i), "-qp_p", str(cfg.amf_qp_p)]
+        args += [
+            "-qp_i", str(cfg.amf_qp_i),
+            "-qp_p", str(cfg.amf_qp_p),
+        ]
+        if family == "h264":
+            args += ["-qp_b", str(cfg.amf_qp_b)]
+    elif rc_lower in {"vbr_peak", "vbr_latency"}:
+        if cfg.amf_maxrate > 0:
+            args += ["-maxrate", str(cfg.amf_maxrate)]
+        if cfg.amf_bufsize > 0:
+            args += ["-bufsize", str(cfg.amf_bufsize)]
     args += ["-pix_fmt", pix_fmt, "-fps_mode", fps_mode]
     args += list(cfg.extra_args)
     rationale.append(
-        f"AMD AMF {family}: quality={cfg.amf_quality} rc={cfg.amf_rc} pix_fmt={pix_fmt}"
+        f"AMD AMF {family}: quality={cfg.amf_quality} rc={cfg.amf_rc} "
+        f"preanalysis={int(cfg.amf_preanalysis)} vbaq={int(cfg.amf_vbaq)} "
+        f"g={cfg.amf_g} bf={cfg.amf_bf} pix_fmt={pix_fmt}"
     )
     return EncodeBuildResult(args=args, pix_fmt=pix_fmt, rationale=rationale)
 
@@ -304,9 +356,10 @@ def build_x265(
     # x265 doesn't accept --tune animation; anime-favorable params via -x265-params.
     # If the preset already supplies -x265-params via extra_args, don't double-set.
     has_extra_x265_params = any(arg == "-x265-params" for arg in cfg.extra_args)
-    if not has_extra_x265_params:
-        args += ["-x265-params", "aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:rd=4"]
-        rationale.append("libx265: anime-tuned -x265-params (psy-rd 2.0, aq-mode 3).")
+    params_from_cfg = (cfg.x265_params or "").strip()
+    if not has_extra_x265_params and params_from_cfg:
+        args += ["-x265-params", params_from_cfg]
+        rationale.append("libx265: applying configured -x265-params string.")
     args = _scale_filter_if_needed(target_width, target_height) + args
     args += list(cfg.extra_args)
     rationale.append(f"libx265: preset={cfg.x_preset} crf={cfg.x_crf} pix_fmt={pix_fmt}")

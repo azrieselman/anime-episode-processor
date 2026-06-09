@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, get_args, get_origin
 
 import annotated_types as at
@@ -28,13 +29,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from aep.bench.hardware import probe_hardware
+from aep.encode.encoder_family import encode_name_for, encoder_family, software_name_for
 from aep.gui.preset_design.schema_reflect import (
     is_basemodel_subtype,
     is_list_of_str,
     literal_choices,
     strip_optional,
 )
-from aep.persist.presets import Preset, TargetResolution
+from aep.persist.presets import Preset, TargetResolution, amf_rc_matches_when
 
 _CATEGORY_ORDER = [
     "meta",
@@ -42,10 +45,8 @@ _CATEGORY_ORDER = [
     "resolution",
     "upscaler",
     "interpolation",
-    "encoder",
-    "decode",
+    "encoding",
     "streams",
-    "postprocess",
     "batching",
 ]
 
@@ -55,10 +56,8 @@ _CATEGORY_TITLE = {
     "resolution": "Resolution",
     "upscaler": "Upscaler",
     "interpolation": "Interpolation",
-    "encoder": "Encoder",
-    "decode": "Decode",
+    "encoding": "Encoding",
     "streams": "Streams",
-    "postprocess": "Post-process",
     "batching": "Batching",
 }
 
@@ -67,10 +66,11 @@ _FALLBACK_CATEGORY = {
     "UpscalerCfg": "upscaler",
     "TargetResolution": "resolution",
     "InterpolationCfg": "interpolation",
-    "EncoderCfg": "encoder",
+    "EncoderCfg": "encoding",
     "StreamMappingCfg": "streams",
-    "PostprocessCfg": "postprocess",
-    "DecodeCfg": "decode",
+    "PostprocessCfg": "encoding",
+    "DecodeCfg": "encoding",
+    "FrameDedupeCfg": "encoding",
     "BatchingCfg": "batching",
 }
 
@@ -85,6 +85,170 @@ class EditorBinding:
     ) -> None:
         self.apply = apply
         self.commit = commit
+
+
+@dataclass
+class FieldRow:
+    category: str
+    tier: str
+    group: str
+    when_family: str
+    when_rc: str
+    path: tuple[str, ...]
+    label: QLabel
+    widget: QWidget
+
+
+def _codec_caps_from_hardware() -> dict[str, set[str]]:
+    caps: dict[str, set[str]] = {
+        "nvenc": {"h264", "hevc", "av1"},
+        "qsv": {"h264", "hevc", "av1"},
+        "amf": {"h264", "hevc", "av1"},
+        "software": {"h264", "hevc"},
+    }
+    try:
+        hw = probe_hardware()
+    except Exception:
+        return caps
+
+    caps["nvenc"] = {
+        c for c, ok in {
+            "h264": hw.gpu.nvenc_h264 and hw.has_encoder("h264_nvenc"),
+            "hevc": hw.gpu.nvenc_hevc and hw.has_encoder("hevc_nvenc"),
+            "av1": hw.gpu.nvenc_av1 and hw.has_encoder("av1_nvenc"),
+        }.items() if ok
+    } or {"h264", "hevc", "av1"}
+    caps["qsv"] = {
+        c for c, ok in {
+            "h264": hw.gpu.qsv_h264 and hw.has_encoder("h264_qsv"),
+            "hevc": hw.gpu.qsv_hevc and hw.has_encoder("hevc_qsv"),
+            "av1": hw.gpu.qsv_av1 and hw.has_encoder("av1_qsv"),
+        }.items() if ok
+    } or {"h264", "hevc", "av1"}
+    caps["amf"] = {
+        c for c, ok in {
+            "h264": hw.gpu.amf_h264 and hw.has_encoder("h264_amf"),
+            "hevc": hw.gpu.amf_hevc and hw.has_encoder("hevc_amf"),
+            "av1": hw.gpu.amf_av1 and hw.has_encoder("av1_amf"),
+        }.items() if ok
+    } or {"h264", "hevc", "av1"}
+    return caps
+
+
+def _hardware_hint_text() -> str:
+    try:
+        hw = probe_hardware()
+    except Exception:
+        return "Hardware hint unavailable until probe completes."
+
+    labels: list[str] = []
+    if hw.gpu.nvenc_h264 or hw.gpu.nvenc_hevc or hw.gpu.nvenc_av1:
+        nv = [c.upper() for c, ok in {
+            "h264": hw.gpu.nvenc_h264 and hw.has_encoder("h264_nvenc"),
+            "hevc": hw.gpu.nvenc_hevc and hw.has_encoder("hevc_nvenc"),
+            "av1": hw.gpu.nvenc_av1 and hw.has_encoder("av1_nvenc"),
+        }.items() if ok]
+        if nv:
+            labels.append(f"NVIDIA NVENC ({', '.join(nv)})")
+    if hw.gpu.qsv_h264 or hw.gpu.qsv_hevc or hw.gpu.qsv_av1:
+        qsv = [c.upper() for c, ok in {
+            "h264": hw.gpu.qsv_h264 and hw.has_encoder("h264_qsv"),
+            "hevc": hw.gpu.qsv_hevc and hw.has_encoder("hevc_qsv"),
+            "av1": hw.gpu.qsv_av1 and hw.has_encoder("av1_qsv"),
+        }.items() if ok]
+        if qsv:
+            labels.append(f"Intel QSV ({', '.join(qsv)})")
+    if hw.gpu.amf_h264 or hw.gpu.amf_hevc or hw.gpu.amf_av1:
+        amf = [c.upper() for c, ok in {
+            "h264": hw.gpu.amf_h264 and hw.has_encoder("h264_amf"),
+            "hevc": hw.gpu.amf_hevc and hw.has_encoder("hevc_amf"),
+            "av1": hw.gpu.amf_av1 and hw.has_encoder("av1_amf"),
+        }.items() if ok]
+        if amf:
+            labels.append(f"AMD AMF ({', '.join(amf)})")
+    if not labels:
+        return "No hardware encoder capabilities detected from the last probe."
+    return "Detected: " + "; ".join(labels)
+
+
+class EncoderNamePicker(QWidget):
+    def __init__(self, *, trigger: Callable[[], None]) -> None:
+        super().__init__()
+        self._caps = _codec_caps_from_hardware()
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+
+        self._backend = QComboBox()
+        self._backend.addItem("NVIDIA (NVENC)", "nvenc")
+        self._backend.addItem("Intel (QSV)", "qsv")
+        self._backend.addItem("AMD (AMF)", "amf")
+        self._backend.addItem("CPU (libx264/libx265)", "software")
+        self._codec = QComboBox()
+        h.addWidget(self._backend, 1)
+        h.addWidget(self._codec, 1)
+
+        self._backend.currentIndexChanged.connect(self._on_backend_changed)
+        self._codec.currentIndexChanged.connect(lambda _i=0: trigger())
+        self._backend.currentIndexChanged.connect(lambda _i=0: trigger())
+        self._rebuild_codecs(preferred="hevc")
+
+    def _on_backend_changed(self, _i: int = 0) -> None:
+        self._rebuild_codecs(preferred=None)
+
+    def _rebuild_codecs(self, *, preferred: str | None) -> None:
+        backend = str(self._backend.currentData() or "software")
+        available = sorted(self._caps.get(backend, {"h264", "hevc"}))
+        if backend == "software":
+            available = [c for c in ("h264", "hevc") if c in available]
+            if not available:
+                available = ["h264", "hevc"]
+        elif not available:
+            available = ["h264", "hevc", "av1"]
+
+        with QSignalBlocker(self._codec):
+            self._codec.clear()
+            for codec in available:
+                label = {"h264": "H.264", "hevc": "HEVC", "av1": "AV1"}[codec]
+                self._codec.addItem(label, codec)
+            if preferred is not None:
+                idx = self._codec.findData(preferred)
+                if idx >= 0:
+                    self._codec.setCurrentIndex(idx)
+            elif self._codec.count() > 0:
+                self._codec.setCurrentIndex(0)
+
+        if backend != "software" and "av1" not in available:
+            self._codec.setToolTip(
+                "AV1 is hidden because the last hardware probe did not report support."
+            )
+        else:
+            self._codec.setToolTip("")
+
+    def active_family(self) -> str:
+        return str(self._backend.currentData() or "software")
+
+    def encoder_name(self) -> str:
+        backend = str(self._backend.currentData() or "software")
+        codec = str(self._codec.currentData() or "hevc")
+        if backend == "software":
+            return software_name_for("h264" if codec == "h264" else "hevc")
+        return encode_name_for(backend, codec)  # type: ignore[arg-type]
+
+    def set_encoder_name(self, name: str) -> None:
+        try:
+            fam = encoder_family(name)
+        except ValueError:
+            fam = "x265"
+        backend = fam if fam in {"nvenc", "qsv", "amf"} else "software"
+        codec = "hevc"
+        if fam in {"nvenc", "qsv", "amf"}:
+            codec = name.split("_", 1)[0]
+        elif fam == "x264":
+            codec = "h264"
+        with QSignalBlocker(self._backend):
+            idx = self._backend.findData(backend)
+            self._backend.setCurrentIndex(idx if idx >= 0 else 0)
+        self._rebuild_codecs(preferred=codec)
 
 
 def deep_get(data: dict[str, Any], path: tuple[str, ...]) -> Any:
@@ -105,15 +269,30 @@ def deep_set(data: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
     cur[path[-1]] = value
 
 
-def _gui_meta(field_info: FieldInfo, model_cls_name: str) -> tuple[str, str]:
+def _gui_meta(field_info: FieldInfo, model_cls_name: str) -> tuple[str, str, str, str, str]:
     extra = field_info.json_schema_extra
     if isinstance(extra, dict):
         gui = extra.get("gui") or {}
         cat = gui.get("category")
         tier = gui.get("tier")
+        group = gui.get("group")
+        when_family = gui.get("when_family")
+        when_rc = gui.get("when_rc")
         if isinstance(cat, str) and tier in ("simple", "advanced"):
-            return cat, tier
-    return _FALLBACK_CATEGORY.get(model_cls_name, model_cls_name.removesuffix("Cfg").lower()), "advanced"
+            return (
+                cat,
+                tier,
+                str(group) if isinstance(group, str) else "general",
+                str(when_family) if isinstance(when_family, str) else "all",
+                str(when_rc) if isinstance(when_rc, str) else "",
+            )
+    return (
+        _FALLBACK_CATEGORY.get(model_cls_name, model_cls_name.removesuffix("Cfg").lower()),
+        "advanced",
+        "general",
+        "all",
+        "",
+    )
 
 
 def _float_spin_decimals(field_info: FieldInfo) -> int:
@@ -152,16 +331,16 @@ def _attach_tooltip(widget: QWidget, description: str) -> None:
 def build_preset_editor(
     *,
     on_changed: Callable[[], None] | None = None,
-) -> tuple[QWidget, list[EditorBinding]]:
+) -> tuple[QWidget, list[EditorBinding], Callable[[], None]]:
     """Return a widget with category tabs and bindings for apply/commit to a preset dict."""
     bindings: list[EditorBinding] = []
-
-    RowList = list[tuple[QLabel, QWidget]]
-    section_rows: dict[str, dict[str, RowList]] = defaultdict(
-        lambda: {"simple": [], "advanced": []},
-    )
+    rows: list[FieldRow] = []
+    on_encoder_family_changed: list[Callable[[], None]] = []
+    visibility_refreshers: list[Callable[[], None]] = []
 
     def trigger() -> None:
+        for fn in on_encoder_family_changed:
+            fn()
         if on_changed:
             on_changed()
 
@@ -169,12 +348,13 @@ def build_preset_editor(
         Preset,
         (),
         bindings,
-        section_rows,
+        rows,
         Preset.__name__,
         trigger,
+        on_encoder_family_changed=on_encoder_family_changed,
     )
 
-    _append_target_resolution_rows(bindings, section_rows, trigger)
+    _append_target_resolution_rows(bindings, rows, trigger)
 
     tabs_parent = QWidget()
     outer = QVBoxLayout(tabs_parent)
@@ -183,20 +363,46 @@ def build_preset_editor(
     tab_widget = QTabWidget()
 
     for cat in _CATEGORY_ORDER:
-        rows_bucket = section_rows.get(cat)
-        if not rows_bucket:
+        cat_rows = [r for r in rows if r.category == cat]
+        if not cat_rows:
             continue
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        inner = QWidget()
-        vl = QVBoxLayout(inner)
-        vl.setContentsMargins(8, 8, 8, 8)
+        if cat == "encoding":
+            scroll = _build_encoding_tab(
+                cat_rows,
+                on_encoder_family_changed,
+                trigger,
+                visibility_refreshers,
+            )
+        else:
+            scroll = _build_standard_tab(cat_rows)
+        tab_widget.addTab(scroll, _CATEGORY_TITLE.get(cat, cat.title()))
 
-        simple_box = QGroupBox("Simple")
-        sf = QFormLayout(simple_box)
-        for lbl, w in rows_bucket["simple"]:
-            sf.addRow(lbl, w)
+    outer.addWidget(tab_widget)
 
+    def refresh_dynamic_visibility() -> None:
+        for fn in visibility_refreshers:
+            fn()
+
+    return tabs_parent, bindings, refresh_dynamic_visibility
+
+
+def _build_standard_tab(rows: list[FieldRow]) -> QScrollArea:
+    simple_rows = [r for r in rows if r.tier == "simple"]
+    advanced_rows = [r for r in rows if r.tier == "advanced"]
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    inner = QWidget()
+    vl = QVBoxLayout(inner)
+    vl.setContentsMargins(8, 8, 8, 8)
+
+    simple_box = QGroupBox("Simple")
+    sf = QFormLayout(simple_box)
+    for row in simple_rows:
+        sf.addRow(row.label, row.widget)
+    vl.addWidget(simple_box)
+
+    if advanced_rows:
         adv_toggle = QToolButton()
         adv_toggle.setCheckable(True)
         adv_toggle.setText("Show advanced")
@@ -206,8 +412,8 @@ def build_preset_editor(
         adv_v.addWidget(adv_toggle)
         adv_box = QGroupBox()
         af = QFormLayout(adv_box)
-        for lbl, w in rows_bucket["advanced"]:
-            af.addRow(lbl, w)
+        for row in advanced_rows:
+            af.addRow(row.label, row.widget)
         adv_box.setVisible(False)
         adv_v.addWidget(adv_box)
 
@@ -216,23 +422,137 @@ def build_preset_editor(
             btn.setText("Hide advanced" if on else "Show advanced")
 
         adv_toggle.toggled.connect(_toggle_adv)
-        vl.addWidget(simple_box)
         vl.addWidget(adv_wrap)
-        vl.addStretch(1)
-        scroll.setWidget(inner)
-        tab_widget.addTab(scroll, _CATEGORY_TITLE.get(cat, cat.title()))
 
-    outer.addWidget(tab_widget)
-    return tabs_parent, bindings
+    vl.addStretch(1)
+    scroll.setWidget(inner)
+    return scroll
+
+
+def _build_encoding_tab(
+    rows: list[FieldRow],
+    on_encoder_family_changed: list[Callable[[], None]],
+    trigger: Callable[[], None],
+    visibility_refreshers: list[Callable[[], None]],
+) -> QScrollArea:
+    group_order = [
+        ("selection", "Selection"),
+        ("quality", "Quality"),
+        ("nvenc", "NVIDIA NVENC Tuning"),
+        ("qsv", "Intel QSV Tuning"),
+        ("amf", "AMD AMF Tuning"),
+        ("software", "Software Encoder Tuning"),
+        ("decode", "Source and Decode"),
+        ("polish", "Output Polish"),
+        ("expert", "Expert"),
+    ]
+
+    by_group: dict[str, list[FieldRow]] = defaultdict(list)
+    for row in rows:
+        by_group[row.group].append(row)
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    inner = QWidget()
+    vl = QVBoxLayout(inner)
+    vl.setContentsMargins(8, 8, 8, 8)
+
+    visibility_rows: list[FieldRow] = []
+    family_picker: EncoderNamePicker | None = None
+    amf_rc_combo: QComboBox | None = None
+
+    for row in rows:
+        if row.path == ("encoder", "name") and isinstance(row.widget, EncoderNamePicker):
+            family_picker = row.widget
+        if row.path == ("encoder", "amf_rc") and isinstance(row.widget, QComboBox):
+            amf_rc_combo = row.widget
+
+    if family_picker is None:
+        for row in rows:
+            if row.path == ("encoder", "name"):
+                row.widget = EncoderNamePicker(trigger=trigger)
+                family_picker = row.widget if isinstance(row.widget, EncoderNamePicker) else None
+                break
+
+    for group_key, group_title in group_order:
+        grouped = by_group.get(group_key, [])
+        if not grouped:
+            continue
+        simple_rows = [r for r in grouped if r.tier == "simple"]
+        advanced_rows = [r for r in grouped if r.tier == "advanced"]
+        if not simple_rows and not advanced_rows:
+            continue
+
+        box = QGroupBox(group_title)
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(8, 8, 8, 8)
+        form = QFormLayout()
+        for row in simple_rows:
+            form.addRow(row.label, row.widget)
+            visibility_rows.append(row)
+        box_layout.addLayout(form)
+
+        if advanced_rows:
+            adv_toggle = QToolButton()
+            adv_toggle.setCheckable(True)
+            adv_toggle.setText("Show advanced")
+            box_layout.addWidget(adv_toggle)
+
+            adv_box = QGroupBox()
+            adv_form = QFormLayout(adv_box)
+            for row in advanced_rows:
+                adv_form.addRow(row.label, row.widget)
+                visibility_rows.append(row)
+            adv_box.setVisible(False)
+            box_layout.addWidget(adv_box)
+
+            def _toggle_adv(on: bool, btn=adv_toggle, adv=adv_box) -> None:
+                adv.setVisible(on)
+                btn.setText("Hide advanced" if on else "Show advanced")
+
+            adv_toggle.toggled.connect(_toggle_adv)
+
+        if group_key == "selection":
+            hint = QLabel(_hardware_hint_text())
+            hint.setWordWrap(True)
+            box_layout.addWidget(hint)
+
+        vl.addWidget(box)
+
+    def _sync_visibility() -> None:
+        active = family_picker.active_family() if family_picker is not None else "all"
+        current_rc = str(amf_rc_combo.currentData() or "") if amf_rc_combo is not None else ""
+        for row in visibility_rows:
+            target = row.when_family
+            visible = target in {"all", active}
+            if target == "software":
+                visible = active == "software"
+            if visible and row.when_rc:
+                visible = amf_rc_matches_when(row.when_rc, current_rc)
+            row.label.setVisible(visible)
+            row.widget.setVisible(visible)
+
+    visibility_refreshers.append(_sync_visibility)
+    if family_picker is not None:
+        on_encoder_family_changed.append(_sync_visibility)
+    if amf_rc_combo is not None:
+        amf_rc_combo.currentIndexChanged.connect(lambda _i=0: _sync_visibility())
+    _sync_visibility()
+
+    vl.addStretch(1)
+    scroll.setWidget(inner)
+    return scroll
 
 
 def _walk_model_fields(
     model_cls: type[BaseModel],
     path: tuple[str, ...],
     bindings: list[EditorBinding],
-    section_rows: dict[str, dict[str, list[tuple[QLabel, QWidget]]]],
+    rows: list[FieldRow],
     model_cls_name: str,
     trigger: Callable[[], None],
+    *,
+    on_encoder_family_changed: list[Callable[[], None]],
 ) -> None:
     for fname, finfo in model_cls.model_fields.items():
         if path == () and fname == "target_resolution":
@@ -246,11 +566,21 @@ def _walk_model_fields(
         if is_basemodel_subtype(inner):
             sub = inner
             assert issubclass(sub, BaseModel)
-            _walk_model_fields(sub, path + (fname,), bindings, section_rows, sub.__name__, trigger)
+            _walk_model_fields(
+                sub,
+                path + (fname,),
+                bindings,
+                rows,
+                sub.__name__,
+                trigger,
+                on_encoder_family_changed=on_encoder_family_changed,
+            )
             continue
 
-        cat, tier = _gui_meta(finfo, model_cls_name)
+        cat, tier, group, when_family, when_rc = _gui_meta(finfo, model_cls_name)
         title = fname.replace("_", " ").title()
+        if path == ("encoder",) and fname == "name":
+            title = "Encoder"
         label = QLabel(title)
         desc = finfo.description or ""
         if desc:
@@ -264,12 +594,24 @@ def _walk_model_fields(
             path + (fname,),
             bindings,
             trigger,
+            on_encoder_family_changed=on_encoder_family_changed,
         )
         if leaf is None:
             continue
         row_widget = leaf
         _attach_tooltip(row_widget, desc)
-        section_rows[cat][tier].append((label, row_widget))
+        rows.append(
+            FieldRow(
+                category=cat,
+                tier=tier,
+                group=group,
+                when_family=when_family,
+                when_rc=when_rc,
+                path=path + (fname,),
+                label=label,
+                widget=row_widget,
+            ),
+        )
 
 
 def _make_leaf_widget(
@@ -280,7 +622,23 @@ def _make_leaf_widget(
     leaf_path: tuple[str, ...],
     bindings: list[EditorBinding],
     trigger: Callable[[], None],
+    *,
+    on_encoder_family_changed: list[Callable[[], None]],
 ) -> QWidget | None:
+    if leaf_path == ("encoder", "name"):
+        picker = EncoderNamePicker(trigger=trigger)
+
+        def apply(data: dict[str, Any]) -> None:
+            picker.set_encoder_name(str(deep_get(data, leaf_path)))
+            for fn in on_encoder_family_changed:
+                fn()
+
+        def commit(data: dict[str, Any]) -> None:
+            deep_set(data, leaf_path, picker.encoder_name())
+
+        bindings.append(EditorBinding(apply, commit))
+        return picker
+
     if fname == "suitable_for" and get_origin(inner) is list:
         args = get_args(inner)
         if args:
@@ -595,7 +953,7 @@ def _build_literal_list_checkbox(
 
 def _append_target_resolution_rows(
     bindings: list[EditorBinding],
-    section_rows: dict[str, dict[str, list[tuple[QLabel, QWidget]]]],
+    rows: list[FieldRow],
     trigger: Callable[[], None],
 ) -> None:
     fi_mode = TargetResolution.model_fields["mode"]
@@ -691,17 +1049,50 @@ def _append_target_resolution_rows(
     lm = QLabel("Mode")
     lm.setToolTip(fi_mode.description or "")
     mode_combo.setToolTip(fi_mode.description or "")
-    section_rows["resolution"]["simple"].append((lm, mode_combo))
+    rows.append(
+        FieldRow(
+            category="resolution",
+            tier="simple",
+            group="general",
+            when_family="all",
+            when_rc="",
+            path=("target_resolution", "mode"),
+            label=lm,
+            widget=mode_combo,
+        ),
+    )
 
     ln = QLabel("Named target")
     ln.setToolTip(fi_named.description or "")
     named_combo.setToolTip(fi_named.description or "")
-    section_rows["resolution"]["simple"].append((ln, row_named))
+    rows.append(
+        FieldRow(
+            category="resolution",
+            tier="simple",
+            group="general",
+            when_family="all",
+            when_rc="",
+            path=("target_resolution", "named"),
+            label=ln,
+            widget=row_named,
+        ),
+    )
 
     fi_w = TargetResolution.model_fields["width"]
     fi_h = TargetResolution.model_fields["height"]
     lh = QLabel("Explicit size")
     lh.setToolTip(((fi_w.description or "") + " " + (fi_h.description or "")).strip())
-    section_rows["resolution"]["advanced"].append((lh, wh_row))
+    rows.append(
+        FieldRow(
+            category="resolution",
+            tier="advanced",
+            group="general",
+            when_family="all",
+            when_rc="",
+            path=("target_resolution", "explicit_size"),
+            label=lh,
+            widget=wh_row,
+        ),
+    )
 
     sync_visibility()

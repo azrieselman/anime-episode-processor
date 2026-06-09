@@ -44,7 +44,7 @@ def _make_ctx(tmp_path: Path) -> PipelineContext:
 
 
 def _hwaccel_token_in_cmd(cmd_strs: list[str]) -> bool:
-    return any(t in cmd_strs for t in ("d3d11va", "cuda"))
+    return any(t in cmd_strs for t in ("d3d11va", "cuda", "amf"))
 
 
 def _make_streaming_fake(calls: list[list[str]]):
@@ -71,6 +71,7 @@ def _make_capture_fake(calls: list[list[str]]):
 def test_decode_hwaccel_uses_hardware_decode() -> None:
     assert decode_hwaccel_uses_hardware_decode("cuda") is True
     assert decode_hwaccel_uses_hardware_decode("d3d11va") is True
+    assert decode_hwaccel_uses_hardware_decode("amf") is True
     assert decode_hwaccel_uses_hardware_decode("off") is False
     assert decode_hwaccel_uses_hardware_decode("") is False
 
@@ -218,6 +219,37 @@ def test_encode_source_retries_without_hwaccel(monkeypatch, tmp_path: Path) -> N
     stage.run(ctx, plan, EventSink())
     assert len(calls) == 2
     assert "d3d11va" in calls[0]
+    assert "off" in calls[1]
+
+
+def test_decode_stage_retries_without_hwaccel_amf(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "aep.pipeline.stages.s04_decode_serve.run_streaming",
+        _make_streaming_fake(calls),
+    )
+    monkeypatch.setattr(
+        "aep.pipeline.stages.s04_decode_serve.run_capture",
+        _make_capture_fake(calls),
+    )
+    monkeypatch.setattr(
+        PipelineContext,
+        "get_frame_manifest",
+        lambda *a, **k: {"count": 2, "bytes": 0},
+    )
+
+    stage = DecodeServeStage(ffmpeg=_FakeFFmpeg())
+    ctx = _make_ctx(tmp_path)
+    ctx.plan = {"decode": {"target_w": None, "target_h": None}, "hdr": {}}
+    plan = StagePlan(
+        stage_name="04_decode_serve",
+        cache_key="k",
+        params={"active": True, "frame_format": "png", "bt709_normalize": True, "decode_hwaccel": "amf"},
+        outputs=[tmp_path / "frames"],
+    )
+    stage.run(ctx, plan, EventSink())
+    assert len(calls) == 2
+    assert "amf" in calls[0]
     assert "off" in calls[1]
 
 

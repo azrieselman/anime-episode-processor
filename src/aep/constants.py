@@ -49,7 +49,6 @@ BIN_REALESRGAN = "realesrgan-ncnn-vulkan.exe"
 BIN_RIFE = "rife-ncnn-vulkan.exe"
 BIN_WAIFU2X = "waifu2x-ncnn-vulkan.exe"
 BIN_ANIME4KCPP = "ac_cli.exe"
-BIN_ANIME4KCPP_LEGACY = "Anime4KCPP_CLI.exe"
 BIN_VSPIPE = "vspipe.exe"
 
 # Pinned tool versions. The adapter base class verifies these at startup; any mismatch is a
@@ -65,7 +64,6 @@ PINNED_VERSIONS = {
     "rife-ncnn-vulkan": "20250112",
     "waifu2x-ncnn-vulkan": "20220728",
     "anime4kcpp": "3.2.0",
-    "anime4k-legacy": "2.5.0",
     "anime4kcpp-vs": "3.2.0",
     "vapoursynth-vspipe": "R74",
     "ffms2-vapoursynth": "2.40",

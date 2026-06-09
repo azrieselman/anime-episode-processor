@@ -30,7 +30,6 @@ tools/realcugan-ncnn-vulkan/*
 tools/realesrgan-ncnn-vulkan/*
 tools/rife-ncnn-vulkan/*
 tools/models/*
-tools/anime4k-legacy/*
 !tools/**/.gitkeep
 .cache/
 

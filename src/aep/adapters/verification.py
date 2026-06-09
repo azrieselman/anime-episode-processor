@@ -18,7 +18,6 @@ import logging
 from dataclasses import dataclass
 
 from aep.adapters.anime4kcpp import Anime4kcppAdapter
-from aep.adapters.anime4kcpp_legacy import Anime4kcppLegacyAdapter
 from aep.adapters.anime4kcpp_vs import Ffms2VapourSynthAdapter, VapourSynthAdapter
 from aep.adapters.base import ToolAdapter
 from aep.adapters.ffmpeg import FFmpegAdapter
@@ -55,7 +54,6 @@ DEFAULT_ADAPTERS: list[type[ToolAdapter]] = [
     MkvpropeditAdapter,
     MkvinfoAdapter,
     Anime4kcppAdapter,
-    Anime4kcppLegacyAdapter,
     VapourSynthAdapter,
     Ffms2VapourSynthAdapter,
     RifeAdapter,

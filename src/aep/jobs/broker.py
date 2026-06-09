@@ -759,6 +759,7 @@ class JobBroker:
         )
         ctx.extras["resume_from_stage"] = job.resume_from_stage
         ctx.extras["pipeline_order"] = settings.pipeline.order
+        ctx.extras["prefer_hardware_encoder"] = settings.hardware.prefer_hardware_encoder
         if job.resume_from_stage:
             plan_path = workdir / "01_plan" / "plan.json"
             if plan_path.is_file():

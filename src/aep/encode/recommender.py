@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from aep.bench.hardware import HardwareProfile
-from aep.persist.presets import EncoderCfg, Preset
+from aep.persist.presets import EncoderCfg, Preset, coerce_amf_encoder
 
 Goal = Literal["quality", "speed", "archival", "compat", "auto"]
 
@@ -70,6 +70,7 @@ def recommend(
     source_codec: str | None = None,
     source_pix_fmt: str | None = None,
     goal: Goal = "auto",
+    prefer_hardware_encoder: bool = True,
 ) -> EncoderRecommendation:
     cfg = preset.encoder.model_copy(deep=True)
     rationale: list[str] = []
@@ -78,16 +79,25 @@ def recommend(
     requested = cfg.name
     rationale.append(f"Preset '{preset.meta.id}' requests encoder: {requested}")
 
-    cfg, fb_warnings, fb_rationale = _enforce_hardware_availability(cfg, hardware)
+    cfg, fb_warnings, fb_rationale = _enforce_hardware_availability(
+        cfg,
+        hardware,
+        prefer_hardware_encoder=prefer_hardware_encoder,
+    )
     rationale.extend(fb_rationale)
     warnings.extend(fb_warnings)
 
-    cfg, goal_rationale = _apply_goal(cfg, goal)
+    effective_goal: Goal = cfg.goal if goal == "auto" else goal
+    cfg, goal_rationale = _apply_goal(cfg, effective_goal)
     rationale.extend(goal_rationale)
 
     # compat changes encoder family (e.g. HEVC→H.264); re-validate against hardware.
-    if goal == "compat":
-        cfg, fb2, _ = _enforce_hardware_availability(cfg, hardware)
+    if effective_goal == "compat":
+        cfg, fb2, _ = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
         warnings.extend(fb2)
 
     if source_pix_fmt and "10" in source_pix_fmt and cfg.name in {
@@ -106,11 +116,29 @@ def recommend(
             "filesize for the same quality."
         )
 
+    cfg, amf_rationale = _coerce_amf(cfg)
+    rationale.extend(amf_rationale)
+
     rationale.append(f"Final encoder: {cfg.name}")
     return EncoderRecommendation(encoder=cfg, rationale=rationale, warnings=warnings)
 
 
-def _nvenc_chain(cfg: EncoderCfg, hardware: HardwareProfile) -> tuple[EncoderCfg, list[str], list[str]]:
+def _coerce_amf(cfg: EncoderCfg) -> tuple[EncoderCfg, list[str]]:
+    if not cfg.name.endswith("_amf"):
+        return cfg, []
+    before = cfg.amf_vbaq
+    cfg = coerce_amf_encoder(cfg)
+    if before and not cfg.amf_vbaq:
+        return cfg, ["AMF VBAQ disabled: incompatible with CQP rate control."]
+    return cfg, []
+
+
+def _nvenc_chain(
+    cfg: EncoderCfg,
+    hardware: HardwareProfile,
+    *,
+    prefer_hardware_encoder: bool,
+) -> tuple[EncoderCfg, list[str], list[str]]:
     warnings: list[str] = []
     rationale: list[str] = []
     name = cfg.name
@@ -129,13 +157,21 @@ def _nvenc_chain(cfg: EncoderCfg, hardware: HardwareProfile) -> tuple[EncoderCfg
             f"{hardware.gpu.arch}. Falling back to hevc_nvenc."
         )
         cfg = cfg.model_copy(update={"name": "hevc_nvenc"})  # type: ignore[arg-type]
-        cfg2, w2, r2 = _enforce_hardware_availability(cfg, hardware)
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
         return cfg2, warnings + w2, rationale + r2
 
     if name == "hevc_nvenc" and not hardware.gpu.nvenc_hevc:
         warnings.append("hevc_nvenc unavailable; falling back to h264_nvenc.")
         cfg = cfg.model_copy(update={"name": "h264_nvenc"})  # type: ignore[arg-type]
-        cfg2, w2, r2 = _enforce_hardware_availability(cfg, hardware)
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
         return cfg2, warnings + w2, rationale + r2
 
     if name == "h264_nvenc" and not hardware.gpu.nvenc_h264:
@@ -150,7 +186,12 @@ def _nvenc_chain(cfg: EncoderCfg, hardware: HardwareProfile) -> tuple[EncoderCfg
     return cfg, warnings, rationale
 
 
-def _qsv_chain(cfg: EncoderCfg, hardware: HardwareProfile) -> tuple[EncoderCfg, list[str], list[str]]:
+def _qsv_chain(
+    cfg: EncoderCfg,
+    hardware: HardwareProfile,
+    *,
+    prefer_hardware_encoder: bool,
+) -> tuple[EncoderCfg, list[str], list[str]]:
     warnings: list[str] = []
     rationale: list[str] = []
     name = cfg.name
@@ -167,12 +208,20 @@ def _qsv_chain(cfg: EncoderCfg, hardware: HardwareProfile) -> tuple[EncoderCfg, 
     if name == "av1_qsv" and hardware.gpu.qsv_hevc and hardware.has_encoder("hevc_qsv"):
         warnings.append("Falling back to hevc_qsv.")
         cfg = cfg.model_copy(update={"name": "hevc_qsv"})  # type: ignore[arg-type]
-        cfg2, w2, r2 = _enforce_hardware_availability(cfg, hardware)
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
         return cfg2, warnings + w2, rationale + r2
     if name in {"av1_qsv", "hevc_qsv"} and hardware.gpu.qsv_h264 and hardware.has_encoder("h264_qsv"):
         warnings.append("Falling back to h264_qsv.")
         cfg = cfg.model_copy(update={"name": "h264_qsv"})  # type: ignore[arg-type]
-        cfg2, w2, r2 = _enforce_hardware_availability(cfg, hardware)
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
         return cfg2, warnings + w2, rationale + r2
 
     sw = _HW_TO_SOFTWARE[name]
@@ -181,7 +230,12 @@ def _qsv_chain(cfg: EncoderCfg, hardware: HardwareProfile) -> tuple[EncoderCfg, 
     return cfg, warnings, rationale
 
 
-def _amf_chain(cfg: EncoderCfg, hardware: HardwareProfile) -> tuple[EncoderCfg, list[str], list[str]]:
+def _amf_chain(
+    cfg: EncoderCfg,
+    hardware: HardwareProfile,
+    *,
+    prefer_hardware_encoder: bool,
+) -> tuple[EncoderCfg, list[str], list[str]]:
     warnings: list[str] = []
     rationale: list[str] = []
     name = cfg.name
@@ -198,12 +252,20 @@ def _amf_chain(cfg: EncoderCfg, hardware: HardwareProfile) -> tuple[EncoderCfg, 
     if name == "av1_amf" and hardware.gpu.amf_hevc and hardware.has_encoder("hevc_amf"):
         warnings.append("Falling back to hevc_amf.")
         cfg = cfg.model_copy(update={"name": "hevc_amf"})  # type: ignore[arg-type]
-        cfg2, w2, r2 = _enforce_hardware_availability(cfg, hardware)
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
         return cfg2, warnings + w2, rationale + r2
     if name in {"av1_amf", "hevc_amf"} and hardware.gpu.amf_h264 and hardware.has_encoder("h264_amf"):
         warnings.append("Falling back to h264_amf.")
         cfg = cfg.model_copy(update={"name": "h264_amf"})  # type: ignore[arg-type]
-        cfg2, w2, r2 = _enforce_hardware_availability(cfg, hardware)
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
         return cfg2, warnings + w2, rationale + r2
 
     sw = _HW_TO_SOFTWARE[name]
@@ -213,23 +275,29 @@ def _amf_chain(cfg: EncoderCfg, hardware: HardwareProfile) -> tuple[EncoderCfg, 
 
 
 def _enforce_hardware_availability(
-    cfg: EncoderCfg, hardware: HardwareProfile,
+    cfg: EncoderCfg,
+    hardware: HardwareProfile,
+    *,
+    prefer_hardware_encoder: bool,
 ) -> tuple[EncoderCfg, list[str], list[str]]:
     warnings: list[str] = []
     rationale: list[str] = []
     name = cfg.name
 
     if name in {"h264_nvenc", "hevc_nvenc", "av1_nvenc"}:
-        return _nvenc_chain(cfg, hardware)
+        return _nvenc_chain(cfg, hardware, prefer_hardware_encoder=prefer_hardware_encoder)
 
     if name in {"h264_qsv", "hevc_qsv", "av1_qsv"}:
-        return _qsv_chain(cfg, hardware)
+        return _qsv_chain(cfg, hardware, prefer_hardware_encoder=prefer_hardware_encoder)
 
     if name in {"h264_amf", "hevc_amf", "av1_amf"}:
-        return _amf_chain(cfg, hardware)
+        return _amf_chain(cfg, hardware, prefer_hardware_encoder=prefer_hardware_encoder)
 
     if name in {"libx264", "libx265"} and not hardware.has_encoder(name):
         warnings.append(f"{name} not present in this ffmpeg build.")
+        if not prefer_hardware_encoder:
+            warnings.append("Hardware encoder fallback disabled by settings.")
+            return cfg, warnings, rationale
         for sw_name, hw_name in _SOFTWARE_TO_HW_PREFERENCE:
             if sw_name != name:
                 continue
@@ -254,7 +322,11 @@ def _enforce_hardware_availability(
             if ok:
                 warnings.append(f"Falling back to {hw_name}.")
                 cfg = cfg.model_copy(update={"name": hw_name})  # type: ignore[arg-type]
-                cfg2, w2, r2 = _enforce_hardware_availability(cfg, hardware)
+                cfg2, w2, r2 = _enforce_hardware_availability(
+                    cfg,
+                    hardware,
+                    prefer_hardware_encoder=prefer_hardware_encoder,
+                )
                 return cfg2, warnings + w2, rationale + r2
 
     return cfg, warnings, rationale
@@ -274,27 +346,34 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
     if goal == "quality":
         if is_nvenc:
             cfg = cfg.model_copy(update={
-                "nvenc_preset": "p7", "nvenc_cq": min(cfg.nvenc_cq, 19),
-                "nvenc_multipass": "fullres",
-                "nvenc_spatial_aq": True, "nvenc_temporal_aq": True,
+                "nvenc_preset": "p6", "nvenc_cq": min(cfg.nvenc_cq, 19),
+                "nvenc_multipass": "qres",
+                "nvenc_spatial_aq": True, "nvenc_temporal_aq": False,
+                "nvenc_rc_lookahead": max(cfg.nvenc_rc_lookahead, 24),
             })
-            rationale.append("Goal=quality: NVENC bumped to p7, CQ ≤ 19, fullres multipass.")
+            rationale.append("Goal=quality: NVENC bumped to p6, CQ ≤ 19, qres multipass.")
         elif is_qsv:
             cfg = cfg.model_copy(update={
                 "qsv_preset": "veryslow",
                 "qsv_global_quality": max(1, min(cfg.qsv_global_quality, 22)),
+                "qsv_extbrc": True,
+                "qsv_look_ahead_depth": max(cfg.qsv_look_ahead_depth, 40),
+                "qsv_low_power": False,
             })
             rationale.append("Goal=quality: QSV preset veryslow, global_quality tightened.")
         elif is_amf:
             cfg = cfg.model_copy(update={
-                "amf_quality": "high_quality",
+                "amf_quality": "quality",
                 "amf_qp_i": max(0, min(cfg.amf_qp_i, 20)),
-                "amf_qp_p": max(0, min(cfg.amf_qp_p, 20)),
+                "amf_qp_p": max(0, min(cfg.amf_qp_p, 22)),
+                "amf_qp_b": max(0, min(cfg.amf_qp_b, 24)),
+                "amf_preanalysis": True,
+                "amf_vbaq": False,
             })
-            rationale.append("Goal=quality: AMF quality=high_quality, QP tightened.")
+            rationale.append("Goal=quality: AMF quality=quality, QP tightened.")
         else:
-            cfg = cfg.model_copy(update={"x_preset": "slow", "x_crf": min(cfg.x_crf, 17)})
-            rationale.append("Goal=quality: software encoder set to slow preset, CRF ≤ 17.")
+            cfg = cfg.model_copy(update={"x_preset": "slow", "x_crf": min(cfg.x_crf, 21)})
+            rationale.append("Goal=quality: software encoder set to slow preset, CRF ≤ 21.")
     elif goal == "speed":
         if is_nvenc:
             cfg = cfg.model_copy(update={
@@ -306,11 +385,15 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
             cfg = cfg.model_copy(update={
                 "qsv_preset": "veryfast",
                 "qsv_global_quality": min(51, cfg.qsv_global_quality + 4),
+                "qsv_look_ahead_depth": min(cfg.qsv_look_ahead_depth, 12),
+                "qsv_low_power": True,
             })
             rationale.append("Goal=speed: QSV preset veryfast, global_quality relaxed.")
         elif is_amf:
             cfg = cfg.model_copy(update={
                 "amf_quality": "speed",
+                "amf_preanalysis": False,
+                "amf_vbaq": False,
             })
             rationale.append("Goal=speed: AMF quality=speed.")
         else:
@@ -328,6 +411,10 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
             cfg = cfg.model_copy(update={
                 "qsv_preset": "veryslow",
                 "qsv_global_quality": max(1, min(cfg.qsv_global_quality, 20)),
+                "qsv_extbrc": True,
+                "qsv_look_ahead_depth": max(cfg.qsv_look_ahead_depth, 50),
+                "qsv_bf": max(cfg.qsv_bf, 4),
+                "qsv_low_power": False,
             })
             rationale.append("Goal=archival: QSV veryslow / tight global_quality.")
         elif is_amf:
@@ -335,6 +422,9 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
                 "amf_quality": "high_quality",
                 "amf_qp_i": max(0, min(cfg.amf_qp_i, 18)),
                 "amf_qp_p": max(0, min(cfg.amf_qp_p, 18)),
+                "amf_qp_b": max(0, min(cfg.amf_qp_b, 19)),
+                "amf_preanalysis": True,
+                "amf_vbaq": False,
             })
             rationale.append("Goal=archival: AMF high_quality / lower QP.")
         else:

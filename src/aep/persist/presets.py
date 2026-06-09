@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from aep.errors import PresetError
 from aep.util.ffmpeg_argv import normalize_ffmpeg_extra_args
@@ -33,11 +33,20 @@ def _gui(
     tier: Literal["simple", "advanced"],
     *,
     spin_decimals: int | None = None,
+    group: str | None = None,
+    when_family: Literal["nvenc", "qsv", "amf", "software", "all"] | None = None,
+    when_rc: Literal["cqp", "vbr", "cbr"] | None = None,
 ) -> dict[str, object]:
     """Metadata consumed by the schema-driven preset editor."""
     gui: dict[str, object] = {"category": category, "tier": tier}
     if spin_decimals is not None:
         gui["spin_decimals"] = spin_decimals
+    if group is not None:
+        gui["group"] = group
+    if when_family is not None:
+        gui["when_family"] = when_family
+    if when_rc is not None:
+        gui["when_rc"] = when_rc
     return {"gui": gui}
 
 
@@ -48,7 +57,6 @@ UpscalerEngine = Literal[
     "realesrgan-ncnn-vulkan",
     "waifu2x-ncnn-vulkan",
     "anime4kcpp",
-    "anime4k-legacy",
     "anime4kcpp-vs",
     "none",
 ]
@@ -68,10 +76,55 @@ EncoderName = Literal[
     "libx264",
     "libx265",
 ]
+EncoderGoal = Literal["auto", "quality", "speed", "archival", "compat"]
+NvencPreset = Literal["p1", "p2", "p3", "p4", "p5", "p6", "p7"]
+NvencTune = Literal["hq", "ll", "ull", "lossless"]
+NvencRc = Literal["vbr", "constqp", "cbr"]
+NvencMultipass = Literal["disabled", "qres", "fullres"]
+NvencBRefMode = Literal["disabled", "middle", "each"]
+QsvPreset = Literal[
+    "ultrafast",
+    "superfast",
+    "veryfast",
+    "faster",
+    "fast",
+    "medium",
+    "slow",
+    "slower",
+    "veryslow",
+]
 AmfQuality = Literal["speed", "balanced", "quality", "high_quality"]
+AmfRc = Literal["cqp", "vbr_peak", "cbr", "vbr_latency"]
 ContainerName = Literal["mkv", "mp4"]
+
+
+def amf_rc_is_cqp(rc: str) -> bool:
+    """True when AMF rate control uses fixed QP (VBAQ is incompatible)."""
+    return rc.lower() in {"cqp", "constqp", "qp"}
+
+
+def amf_rc_matches_when(when_rc: str, rc: str) -> bool:
+    """True when an AMF ``-rc`` value matches a preset-editor ``when_rc`` token."""
+    key = when_rc.lower()
+    cur = rc.lower()
+    if key == "cqp":
+        return amf_rc_is_cqp(cur)
+    if key == "vbr":
+        return cur in {"vbr_peak", "vbr_latency"}
+    if key == "cbr":
+        return cur == "cbr"
+    return cur == key
+
+
+def coerce_amf_encoder(cfg: "EncoderCfg") -> "EncoderCfg":
+    """Disable VBAQ when AMF RC is CQP; enabling both breaks AMF encoding."""
+    if not cfg.name.endswith("_amf"):
+        return cfg
+    if amf_rc_is_cqp(cfg.amf_rc) and cfg.amf_vbaq:
+        return cfg.model_copy(update={"amf_vbaq": False})
+    return cfg
 ContentClass = Literal["anime_2d", "anime_compressed", "mixed", "auto"]
-DecodeHwaccelMode = Literal["auto", "off", "d3d11va", "cuda"]
+DecodeHwaccelMode = Literal["auto", "off", "d3d11va", "cuda", "amf"]
 PngIntermediateCodec = Literal["mjpeg", "libpng"]
 BatchingMode = Literal["manual", "auto"]
 
@@ -236,114 +289,246 @@ class EncoderCfg(BaseModel):
     name: EncoderName = Field(
         default="hevc_nvenc",
         description="Video encoder: NVENC, Intel QSV, AMD AMF, or CPU libx264/libx265.",
-        json_schema_extra=_gui("encoder", "simple"),
+        json_schema_extra=_gui("encoding", "simple", group="selection", when_family="all"),
     )
-    nvenc_preset: str = Field(
+    goal: EncoderGoal = Field(
+        default="auto",
+        description="High-level tuning target applied before encode (quality, speed, archival, compat, auto).",
+        json_schema_extra=_gui("encoding", "simple", group="quality", when_family="all"),
+    )
+    nvenc_preset: NvencPreset = Field(
         default="p6",
         description="NVENC preset p1 (fastest) … p7 (slowest/best quality).",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="nvenc", when_family="nvenc"),
     )
-    nvenc_tune: str = Field(
+    nvenc_tune: NvencTune = Field(
         default="hq",
         description="NVENC tune string passed to ffmpeg (e.g. hq, ll, ull).",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="nvenc", when_family="nvenc"),
     )
-    nvenc_rc: str = Field(
+    nvenc_rc: NvencRc = Field(
         default="vbr",
         description="NVENC rate-control mode (e.g. vbr, constqp).",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="nvenc", when_family="nvenc"),
     )
     nvenc_cq: int = Field(
         default=20,
+        ge=1,
+        le=51,
         description="NVENC constant-quality target when using CQ-style modes (lower = higher quality).",
-        json_schema_extra=_gui("encoder", "simple"),
+        json_schema_extra=_gui("encoding", "simple", group="quality", when_family="nvenc"),
     )
-    nvenc_multipass: str = Field(
-        default="fullres",
+    nvenc_multipass: NvencMultipass = Field(
+        default="qres",
         description="NVENC multipass setting (e.g. fullres, qres, disabled per ffmpeg).",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="nvenc", when_family="nvenc"),
+    )
+    nvenc_rc_lookahead: int = Field(
+        default=32,
+        ge=0,
+        le=32,
+        description="NVENC rc-lookahead depth in frames.",
+        json_schema_extra=_gui("encoding", "advanced", group="nvenc", when_family="nvenc"),
     )
     nvenc_spatial_aq: bool = Field(
         default=True,
         description="NVENC spatial adaptive quantization.",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="nvenc", when_family="nvenc"),
     )
     nvenc_temporal_aq: bool = Field(
         default=True,
         description="NVENC temporal adaptive quantization.",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="nvenc", when_family="nvenc"),
     )
     nvenc_bframes: int = Field(
         default=3,
+        ge=0,
+        le=8,
         description="Number of B-frames for NVENC GOP structure.",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="nvenc", when_family="nvenc"),
     )
-    nvenc_b_ref_mode: str = Field(
+    nvenc_b_ref_mode: NvencBRefMode = Field(
         default="middle",
         description="NVENC B-frame reference mode (e.g. middle, each).",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="nvenc", when_family="nvenc"),
     )
-    qsv_preset: str = Field(
+    qsv_preset: QsvPreset = Field(
         default="medium",
         description="Intel QSV -preset (e.g. veryfast…veryslow, or driver-specific).",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="qsv", when_family="qsv"),
     )
     qsv_global_quality: int = Field(
-        default=26,
+        default=22,
         ge=1,
         le=51,
         description="Intel QSV -global_quality (lower = higher quality; scale depends on codec).",
-        json_schema_extra=_gui("encoder", "simple"),
+        json_schema_extra=_gui("encoding", "simple", group="quality", when_family="qsv"),
+    )
+    qsv_extbrc: bool = Field(
+        default=True,
+        description="Enable QSV extended bitrate control (required for lookahead depth).",
+        json_schema_extra=_gui("encoding", "advanced", group="qsv", when_family="qsv"),
+    )
+    qsv_look_ahead_depth: int = Field(
+        default=40,
+        ge=0,
+        le=100,
+        description="QSV look-ahead depth (frames). Applied only when extbrc is enabled.",
+        json_schema_extra=_gui("encoding", "advanced", group="qsv", when_family="qsv"),
+    )
+    qsv_bf: int = Field(
+        default=3,
+        ge=0,
+        le=16,
+        description="QSV B-frame count.",
+        json_schema_extra=_gui("encoding", "advanced", group="qsv", when_family="qsv"),
+    )
+    qsv_low_power: bool = Field(
+        default=False,
+        description="Enable low-power QSV encode mode when available.",
+        json_schema_extra=_gui("encoding", "advanced", group="qsv", when_family="qsv"),
     )
     amf_quality: AmfQuality = Field(
         default="quality",
         description="AMD AMF -quality (speed, balanced, quality, high_quality).",
-        json_schema_extra=_gui("encoder", "simple"),
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
     )
-    amf_rc: str = Field(
+    amf_rc: AmfRc = Field(
         default="cqp",
         description="AMD AMF -rc mode (e.g. cqp, vbr_latency).",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
     )
     amf_qp_i: int = Field(
-        default=22,
+        default=19,
         ge=0,
         le=51,
         description="AMD AMF -qp_i when using CQP-style modes.",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui(
+            "encoding", "simple", group="quality", when_family="amf", when_rc="cqp",
+        ),
     )
     amf_qp_p: int = Field(
-        default=22,
+        default=21,
         ge=0,
         le=51,
         description="AMD AMF -qp_p when using CQP-style modes.",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui(
+            "encoding", "advanced", group="amf", when_family="amf", when_rc="cqp",
+        ),
+    )
+    amf_qp_b: int = Field(
+        default=23,
+        ge=0,
+        le=51,
+        description="AMD AMF -qp_b when using CQP-style modes (H.264 AMF only).",
+        json_schema_extra=_gui(
+            "encoding", "advanced", group="amf", when_family="amf", when_rc="cqp",
+        ),
+    )
+    amf_maxrate: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "AMD AMF -maxrate in bits/s for VBR modes (e.g. 8000000 = 8 Mbps). "
+            "0 leaves the encoder default."
+        ),
+        json_schema_extra=_gui(
+            "encoding", "simple", group="quality", when_family="amf", when_rc="vbr",
+        ),
+    )
+    amf_bufsize: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "AMD AMF -bufsize in bits/s for VBR modes (typically matches or exceeds maxrate). "
+            "0 leaves the encoder default."
+        ),
+        json_schema_extra=_gui(
+            "encoding", "simple", group="quality", when_family="amf", when_rc="vbr",
+        ),
+    )
+    amf_preanalysis: bool = Field(
+        default=True,
+        description="Enable AMF preanalysis path for better detail and motion handling.",
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
+    )
+    amf_vbaq: bool = Field(
+        default=False,
+        description="Enable AMF VBAQ adaptive quantization (incompatible with CQP rate control).",
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
+    )
+    amf_g: int = Field(
+        default=250,
+        ge=0,
+        le=1000,
+        description="AMF GOP size (-g). 0 lets the encoder choose automatically.",
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
+    )
+    amf_bf: int = Field(
+        default=3,
+        ge=0,
+        le=16,
+        description="AMF B-frame count (-bf).",
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
+    )
+    amf_pa_lookahead_buffer_depth: int = Field(
+        default=-1,
+        ge=-1,
+        le=41,
+        description=(
+            "AMF preanalysis lookahead buffer depth (-pa_lookahead_buffer_depth). "
+            "-1 leaves the encoder default; effective when preanalysis is enabled."
+        ),
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
+    )
+    amf_pa_taq_mode: int = Field(
+        default=-1,
+        ge=-1,
+        le=2,
+        description=(
+            "AMF temporal adaptive quantization (-pa_taq_mode): "
+            "-1 auto, 0 none, 1 mode 1, 2 mode 2."
+        ),
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
     )
     x_crf: int = Field(
         default=18,
+        ge=0,
+        le=51,
         description="CRF for libx264/libx265 (lower = higher quality, larger files).",
-        json_schema_extra=_gui("encoder", "simple"),
+        json_schema_extra=_gui("encoding", "simple", group="quality", when_family="software"),
     )
     x_preset: str = Field(
         default="slow",
         description="libx264/x265 preset (ultrafast…veryslow).",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="software", when_family="software"),
     )
     x_tune: str | None = Field(
         default="animation",
         description='x264 tune (e.g. "animation"); use empty/null for x265 or no tune.',
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="software", when_family="software"),
+    )
+    x265_params: str | None = Field(
+        default="aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:rd=4",
+        description="Optional libx265 parameter string (for -x265-params). Leave unset to disable.",
+        json_schema_extra=_gui("encoding", "advanced", group="software", when_family="software"),
     )
     extra_args: list[str] = Field(
         default_factory=list,
         description="Additional ffmpeg video encoder arguments as separate tokens (passed verbatim).",
-        json_schema_extra=_gui("encoder", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="expert", when_family="all"),
     )
 
     @field_validator("extra_args", mode="before")
     @classmethod
     def _normalize_extra_args(cls, v: object) -> list[str]:
         return normalize_ffmpeg_extra_args(v)
+
+    @model_validator(mode="after")
+    def _coerce_amf_vbaq_for_rc(self) -> "EncoderCfg":
+        if self.name.endswith("_amf") and amf_rc_is_cqp(self.amf_rc):
+            self.amf_vbaq = False
+        return self
 
 
 class StreamMappingCfg(BaseModel):
@@ -398,24 +583,24 @@ class PostprocessCfg(BaseModel):
     enabled: bool = Field(
         default=False,
         description="Enable optional ffmpeg post-filters after upscale/interpolate.",
-        json_schema_extra=_gui("postprocess", "simple"),
+        json_schema_extra=_gui("encoding", "simple", group="polish", when_family="all"),
     )
     deband: bool = Field(
         default=False,
         description="Apply debanding filter (helps gradients after heavy compression).",
-        json_schema_extra=_gui("postprocess", "simple"),
+        json_schema_extra=_gui("encoding", "simple", group="polish", when_family="all"),
     )
     deblock: bool = Field(
         default=False,
         description="Apply deblocking filter.",
-        json_schema_extra=_gui("postprocess", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="polish", when_family="all"),
     )
     grain_addback: int = Field(
         default=0,
         ge=0,
         le=32,
         description="Film-grain noise strength (0 = off; ffmpeg noise filter).",
-        json_schema_extra=_gui("postprocess", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="polish", when_family="all"),
     )
 
 
@@ -424,10 +609,11 @@ class DecodeCfg(BaseModel):
         default="auto",
         description=(
             "Decoder hardware acceleration: auto (D3D11VA on Windows, off elsewhere), off, "
-            "d3d11va (DXVA/D3D11), or cuda (NVIDIA NVDEC via FFmpeg -hwaccel cuda; requires "
-            "a CUDA-enabled FFmpeg build and drivers)."
+            "d3d11va (DXVA/D3D11), cuda (NVIDIA NVDEC via FFmpeg -hwaccel cuda), or amf "
+            "(AMD UVD/VCE via FFmpeg -hwaccel amf; requires an AMF-enabled FFmpeg build and "
+            "AMD drivers)."
         ),
-        json_schema_extra=_gui("decode", "simple"),
+        json_schema_extra=_gui("encoding", "simple", group="decode", when_family="all"),
     )
     png_intermediate_codec: PngIntermediateCodec = Field(
         default="mjpeg",
@@ -436,7 +622,7 @@ class DecodeCfg(BaseModel):
             "yuvj444p into ``.png`` filenames (smaller cache; NCNN still uses ``-f png``). "
             "libpng writes true lossless PNG (zlib level from app constants)."
         ),
-        json_schema_extra=_gui("decode", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="expert", when_family="all"),
     )
 
 
@@ -450,7 +636,7 @@ class FrameDedupeCfg(BaseModel):
             "per-frame scene scores; RIFE/upscale run on fewer frames, then the full "
             "timeline is restored with duplicate neighbors before encode."
         ),
-        json_schema_extra=_gui("decode", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="decode", when_family="all"),
     )
     threshold: float = Field(
         default=0.02,
@@ -462,12 +648,18 @@ class FrameDedupeCfg(BaseModel):
             "(e.g. 1e-6–0.1); use values like 0.01–0.05 for conservative dedupe. Extremely small "
             "thresholds can mark almost every frame a duplicate if scores cluster near zero."
         ),
-        json_schema_extra=_gui("decode", "advanced", spin_decimals=8),
+        json_schema_extra=_gui(
+            "encoding",
+            "advanced",
+            group="decode",
+            when_family="all",
+            spin_decimals=8,
+        ),
     )
     protect_scene_cuts: bool = Field(
         default=True,
         description="Never skip frames adjacent to a batch-local scene-cut boundary.",
-        json_schema_extra=_gui("decode", "advanced"),
+        json_schema_extra=_gui("encoding", "advanced", group="decode", when_family="all"),
     )
 
 

@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import Any
 
 from aep.adapters.anime4kcpp import Anime4kcppAdapter
-from aep.adapters.anime4kcpp_legacy import Anime4kcppLegacyAdapter
 from aep.adapters.anime4kcpp_vs import Anime4kcppVsAdapter
 from aep.adapters.ffprobe import FFProbeAdapter
 from aep.adapters.realcugan import RealCuganAdapter
@@ -110,12 +109,19 @@ class PlanStage(BaseStage):
 
         # 1. encoder recommendation
         primary = media.primary_video
+        prefer_hardware_encoder_raw = ctx.extras.get("prefer_hardware_encoder")
+        prefer_hardware_encoder = (
+            bool(prefer_hardware_encoder_raw)
+            if isinstance(prefer_hardware_encoder_raw, bool)
+            else True
+        )
         rec = recommend(
             preset,
             hardware=hw,
             source_codec=primary.codec_name if primary else None,
             source_pix_fmt=primary.pix_fmt if primary else None,
-            goal="auto",
+            goal=preset.encoder.goal,
+            prefer_hardware_encoder=prefer_hardware_encoder,
         )
         for w in rec.warnings:
             events.emit(StageEvent(ctx.job_id, self.name, "warning", message=w))
@@ -953,11 +959,6 @@ def _plan_m3_video_path(
             up_cfg.model, up_cfg.scale, up_cfg.denoise,
         ):
             warnings.append(f"anime4kcpp: {note}")
-    elif upscale_active and up_cfg.engine == "anime4k-legacy":
-        for note in Anime4kcppLegacyAdapter.validate_combination(
-            up_cfg.model, up_cfg.scale, up_cfg.denoise,
-        ):
-            warnings.append(f"anime4k-legacy: {note}")
     elif upscale_active and up_cfg.engine == "anime4kcpp-vs":
         for note in Anime4kcppVsAdapter.validate_combination(
             up_cfg.model, up_cfg.scale, up_cfg.denoise,
@@ -1156,4 +1157,6 @@ def _resolve_decode_hwaccel(mode: str) -> str:
         return "d3d11va"
     if m == "cuda":
         return "cuda"
+    if m == "amf":
+        return "amf"
     return "d3d11va" if os.name == "nt" else "off"

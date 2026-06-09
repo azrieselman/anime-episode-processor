@@ -35,32 +35,19 @@ from PySide6.QtWidgets import (
 )
 
 from aep.app.services import AppServices
+from aep.encode.encoder_family import encode_name_for, encoder_family, software_name_for
 from aep.gui import theme
 from aep.jobs.models import JobState
 
 log = logging.getLogger(__name__)
 
 
-# Encoder choices mirror EncoderName Literal in persist/presets.py. Kept in a
-# single module-level constant so test assertions and the dropdown stay aligned.
-_ENCODER_CHOICES: list[str] = [
-    "hevc_nvenc",
-    "h264_nvenc",
-    "av1_nvenc",
-    "hevc_qsv",
-    "h264_qsv",
-    "av1_qsv",
-    "hevc_amf",
-    "h264_amf",
-    "av1_amf",
-    "libx264",
-    "libx265",
-]
 _DECODE_HWACCEL_CHOICES: list[tuple[str, str]] = [
     ("Auto", "auto"),
     ("Off (software decode)", "off"),
     ("DirectX D3D11VA", "d3d11va"),
     ("NVIDIA NVDEC (CUDA)", "cuda"),
+    ("AMD AMF", "amf"),
 ]
 
 
@@ -119,9 +106,22 @@ class JobConfigView(QWidget):
         fps_wrap.setLayout(fps_row)
         ov_form.addRow("Interpolation FPS:", fps_wrap)
 
-        self._encoder_combo = QComboBox()
-        self._encoder_combo.addItems(_ENCODER_CHOICES)
-        ov_form.addRow("Encoder:", self._encoder_combo)
+        encoder_row = QHBoxLayout()
+        self._encoder_backend_combo = QComboBox()
+        self._encoder_backend_combo.addItem("NVIDIA (NVENC)", "nvenc")
+        self._encoder_backend_combo.addItem("Intel (QSV)", "qsv")
+        self._encoder_backend_combo.addItem("AMD (AMF)", "amf")
+        self._encoder_backend_combo.addItem("CPU (libx264/libx265)", "software")
+        self._encoder_codec_combo = QComboBox()
+        self._encoder_backend_combo.currentIndexChanged.connect(
+            lambda _i=0: self._refresh_encoder_codec_choices(preferred=None)
+        )
+        self._refresh_encoder_codec_choices(preferred="hevc")
+        encoder_row.addWidget(self._encoder_backend_combo, 1)
+        encoder_row.addWidget(self._encoder_codec_combo, 1)
+        encoder_wrap = QWidget()
+        encoder_wrap.setLayout(encoder_row)
+        ov_form.addRow("Encoder:", encoder_wrap)
         self._decode_hwaccel_combo = QComboBox()
         for label, value in _DECODE_HWACCEL_CHOICES:
             self._decode_hwaccel_combo.addItem(label, value)
@@ -161,7 +161,11 @@ class JobConfigView(QWidget):
     def _set_overrides_enabled(self, enabled: bool) -> None:
         for w in (
             self._scale_spin, self._denoise_spin, self._fps_enabled,
-            self._fps_spin, self._encoder_combo, self._decode_hwaccel_combo, self._save_btn,
+            self._fps_spin,
+            self._encoder_backend_combo,
+            self._encoder_codec_combo,
+            self._decode_hwaccel_combo,
+            self._save_btn,
             self._reset_btn,
         ):
             w.setEnabled(enabled)
@@ -169,6 +173,43 @@ class JobConfigView(QWidget):
         # driven by the checkbox; force it off.
         if not enabled:
             self._fps_spin.setEnabled(False)
+
+    def _refresh_encoder_codec_choices(self, *, preferred: str | None) -> None:
+        backend = str(self._encoder_backend_combo.currentData() or "software")
+        choices = [("H.264", "h264"), ("HEVC", "hevc")]
+        if backend in {"nvenc", "qsv", "amf"}:
+            choices.append(("AV1", "av1"))
+        self._encoder_codec_combo.blockSignals(True)
+        self._encoder_codec_combo.clear()
+        for label, value in choices:
+            self._encoder_codec_combo.addItem(label, value)
+        if preferred is not None:
+            idx = self._encoder_codec_combo.findData(preferred)
+            self._encoder_codec_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._encoder_codec_combo.blockSignals(False)
+
+    def _set_encoder_name(self, name: str) -> None:
+        try:
+            fam = encoder_family(name)
+        except ValueError:
+            fam = "x265"
+
+        backend = fam if fam in {"nvenc", "qsv", "amf"} else "software"
+        codec = "hevc"
+        if fam in {"nvenc", "qsv", "amf"}:
+            codec = name.split("_", 1)[0]
+        elif fam == "x264":
+            codec = "h264"
+        idx = self._encoder_backend_combo.findData(backend)
+        self._encoder_backend_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._refresh_encoder_codec_choices(preferred=codec)
+
+    def _encoder_name(self) -> str:
+        backend = str(self._encoder_backend_combo.currentData() or "software")
+        codec = str(self._encoder_codec_combo.currentData() or "hevc")
+        if backend == "software":
+            return software_name_for("h264" if codec == "h264" else "hevc")
+        return encode_name_for(backend, codec)  # type: ignore[arg-type]
 
     def _seed_widgets(self, base: dict[str, Any], overrides: dict[str, Any] | None) -> None:
         """Populate widgets from the base preset, then layer overrides on top."""
@@ -190,14 +231,8 @@ class JobConfigView(QWidget):
             self._fps_spin.setValue(float(target_fps))
         self._fps_spin.setEnabled(self._fps_enabled.isChecked())
 
-        enc_name = (merged.get("encoder", {}) or {}).get("name", "hevc_nvenc")
-        if enc_name in _ENCODER_CHOICES:
-            self._encoder_combo.setCurrentText(enc_name)
-        else:
-            # Foreign encoder: prepend it so the user can see what's set
-            # without clobbering it on save.
-            self._encoder_combo.insertItem(0, enc_name)
-            self._encoder_combo.setCurrentIndex(0)
+        enc_name = str((merged.get("encoder", {}) or {}).get("name", "hevc_nvenc"))
+        self._set_encoder_name(enc_name)
 
         decode_mode = (merged.get("decode", {}) or {}).get("hwaccel", "auto")
         idx = self._decode_hwaccel_combo.findData(decode_mode)
@@ -217,7 +252,7 @@ class JobConfigView(QWidget):
                 "target_fps": target_fps,
             },
             "encoder": {
-                "name": self._encoder_combo.currentText(),
+                "name": self._encoder_name(),
             },
             "decode": {
                 "hwaccel": str(self._decode_hwaccel_combo.currentData()),

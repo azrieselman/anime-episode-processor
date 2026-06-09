@@ -669,10 +669,10 @@ def _decode_preprocess_vf_inner(
 
 
 # Decode modes that may fail at runtime (driver / build / source); stages retry with software decode.
-DECODE_HWACCEL_WITH_SW_FALLBACK = frozenset({"d3d11va", "cuda"})
+DECODE_HWACCEL_WITH_SW_FALLBACK = frozenset({"d3d11va", "cuda", "amf"})
 
 # Modes where ``_decode_input_args`` enables FFmpeg hardware decoding (keep in sync with that helper).
-DECODE_HWACCEL_HARDWARE_MODES = frozenset({"d3d11va", "cuda"})
+DECODE_HWACCEL_HARDWARE_MODES = frozenset({"d3d11va", "cuda", "amf"})
 
 
 def decode_hwaccel_has_sw_fallback(decode_hwaccel: str) -> bool:
@@ -694,6 +694,15 @@ def _decode_input_args(source: str, *, decode_hwaccel: str) -> list[str]:
     if mode == "cuda":
         return [
             "-hwaccel", "cuda",
+            "-i", source,
+        ]
+    if mode == "amf":
+        # Do not set ``-hwaccel_output_format amf`` here: decode-serve always runs a
+        # CPU filter chain (zscale/format) and AMD's docs forbid output_format with
+        # filters. Passthrough encode without ``-vf`` can use a dedicated AMF-native
+        # path later; until then ``-hwaccel amf`` alone matches FFmpeg's AMF decode.
+        return [
+            "-hwaccel", "amf",
             "-i", source,
         ]
     return ["-i", source]

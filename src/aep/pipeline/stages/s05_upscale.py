@@ -1,7 +1,7 @@
 """Stage 05: upscale.
 
 Runs the configured upscaler (Real-CUGAN, Real-ESRGAN, waifu2x-ncnn-vulkan,
-Anime4KCPP v3.x CLI, Anime4KCPP 2.5 legacy CLI, or Anime4KCPP VS) against the
+Anime4KCPP v3.x CLI, or Anime4KCPP VS) against the
 frames produced by stage 04.
 
 Behavior:
@@ -24,7 +24,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from aep.adapters.anime4kcpp import Anime4kcppAdapter
-from aep.adapters.anime4kcpp_legacy import Anime4kcppLegacyAdapter
 from aep.adapters.anime4kcpp_models import DEFAULT_ANIME4K_MODEL
 from aep.adapters.anime4kcpp_vs import Anime4kcppVsAdapter
 from aep.adapters.ncnn_base import (
@@ -58,7 +57,6 @@ class UpscaleStage(BaseStage):
         esrgan: RealesrganAdapter | None = None,
         waifu2x: Waifu2xAdapter | None = None,
         anime4kcpp: Anime4kcppAdapter | None = None,
-        anime4kcpp_legacy: Anime4kcppLegacyAdapter | None = None,
         anime4kcpp_vs: Anime4kcppVsAdapter | None = None,
     ) -> None:
         # Lazy-construct on first use so importing this module doesn't probe
@@ -67,7 +65,6 @@ class UpscaleStage(BaseStage):
         self._esrgan = esrgan
         self._waifu2x = waifu2x
         self._anime4kcpp = anime4kcpp
-        self._anime4kcpp_legacy = anime4kcpp_legacy
         self._anime4kcpp_vs = anime4kcpp_vs
 
     # --------------------------------------------------------------- plan
@@ -304,38 +301,6 @@ class UpscaleStage(BaseStage):
                         "pause" if ctx.pause_event.is_set() else None
                     ),
                 )
-        elif engine == "anime4k-legacy":
-            adapter_typed = self._adapter_for(engine)
-            if not hasattr(adapter_typed, "run_frame_sequence"):
-                raise StageError(
-                    f"{self.name}: anime4k-legacy adapter missing run_frame_sequence()"
-                )
-            adapter = adapter_typed  # type: ignore[assignment]
-            resolved_model_id = model or DEFAULT_ANIME4K_MODEL
-
-            def anime_dispatch(
-                _ad: Anime4kcppLegacyAdapter = adapter_typed,
-                _in: Path = in_dir,
-                _out: Path = out_dir,
-                _mid: str = resolved_model_id,
-                _scale: int = scale,
-                _prefer: bool = prefer_cuda,
-                _fmt: str = frame_format,
-                _threads: int = anime4k_threads,
-            ) -> NcnnRunResult:
-                return _ad.run_frame_sequence(
-                    input_dir=_in,
-                    output_dir=_out,
-                    model_id=_mid,
-                    scale=_scale,
-                    prefer_cuda=_prefer,
-                    frame_format=_fmt,
-                    threads=_threads,
-                    on_progress=lambda line: _maybe_emit_progress(ctx, events, self.name, line),
-                    should_interrupt=lambda: "cancel" if ctx.cancel_event.is_set() else (
-                        "pause" if ctx.pause_event.is_set() else None
-                    ),
-                )
         elif engine == "anime4kcpp-vs":
             adapter_typed = self._adapter_for(engine)
             if not hasattr(adapter_typed, "run_frame_sequence"):
@@ -522,10 +487,6 @@ class UpscaleStage(BaseStage):
             if self._anime4kcpp is None:
                 self._anime4kcpp = Anime4kcppAdapter()
             return self._anime4kcpp
-        if engine == "anime4k-legacy":
-            if self._anime4kcpp_legacy is None:
-                self._anime4kcpp_legacy = Anime4kcppLegacyAdapter()
-            return self._anime4kcpp_legacy
         if engine == "anime4kcpp-vs":
             if self._anime4kcpp_vs is None:
                 settings = load_settings()

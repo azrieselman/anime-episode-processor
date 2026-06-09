@@ -26,7 +26,7 @@ from aep.util.paths import runtime_dir
 log = logging.getLogger(__name__)
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
-DecodeHwaccelMode = Literal["auto", "off", "d3d11va", "cuda"]
+DecodeHwaccelMode = Literal["auto", "off", "d3d11va", "cuda", "amf"]
 PipelineOrder = Literal["interpolate_first", "upscale_first"]
 
 
@@ -52,7 +52,7 @@ class GeneralSettings(BaseModel):
 
 
 class HardwareSettings(BaseModel):
-    prefer_nvenc: bool = True
+    prefer_hardware_encoder: bool = True
     max_concurrent_jobs: int = Field(default=1, ge=1, le=4)
     ring_buffer_frames: int = Field(default=DEFAULT_RING_BUFFER_FRAMES, ge=32, le=2048)
     default_tile_size: int = Field(default=DEFAULT_TILE_SIZE, ge=64, le=1024)
@@ -123,6 +123,14 @@ def load_settings() -> AppSettings:
         return AppSettings()
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            hardware = raw.get("hardware")
+            if isinstance(hardware, dict):
+                if (
+                    "prefer_hardware_encoder" not in hardware
+                    and "prefer_nvenc" in hardware
+                ):
+                    hardware["prefer_hardware_encoder"] = bool(hardware.get("prefer_nvenc"))
         return AppSettings.model_validate(raw)
     except (json.JSONDecodeError, ValidationError) as exc:
         # Don't silently overwrite a user's settings — surface the error.

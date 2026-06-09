@@ -2,11 +2,12 @@ meta:
   id: anime_speed
   name: Anime Speed
   description: >
-    Fastest acceptable preset. Real-ESRGAN animevideov3 2x, RIFE v4.22-lite,
-    H.264 NVENC p4. Use for batch jobs where time matters more than absolute fidelity.
+    Fastest acceptable anime preset. Real-ESRGAN animevideov3 2x and RIFE
+    v4.22-lite target high throughput with tuned settings across NVENC, QSV,
+    and AMF encoders.
   builtin: true
   suitable_for: [anime_2d]
-  target_hardware: "RTX 3000 series, 8GB+ VRAM"
+  target_hardware: "Any recent GPU with hardware encode support"
 container: mkv
 target_resolution:
   mode: named
@@ -29,19 +30,39 @@ interpolation:
   fp16: true
 encoder:
   name: h264_nvenc
+  goal: speed
   nvenc_preset: p4
   nvenc_tune: hq
   nvenc_rc: vbr
   nvenc_cq: 22
   nvenc_multipass: qres
+  nvenc_rc_lookahead: 16
   nvenc_spatial_aq: true
   nvenc_temporal_aq: false
   nvenc_bframes: 3
   nvenc_b_ref_mode: middle
+  qsv_preset: veryfast
+  qsv_global_quality: 27
+  qsv_extbrc: true
+  qsv_look_ahead_depth: 12
+  qsv_bf: 2
+  qsv_low_power: true
+  amf_quality: speed
+  amf_rc: cqp
+  amf_qp_i: 22
+  amf_qp_p: 22
+  amf_qp_b: 24
+  amf_preanalysis: false
+  amf_vbaq: false
+  amf_g: 180
   x_crf: 20
   x_preset: medium
   x_tune: animation
+  x265_params: aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:rd=4
   extra_args: []
+decode:
+  hwaccel: auto
+  png_intermediate_codec: mjpeg
 streams:
   copy_audio: true
   copy_subtitles: true

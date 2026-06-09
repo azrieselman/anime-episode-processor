@@ -188,6 +188,19 @@ def test_decode_hwaccel_cuda_on_decode_to_frames(tmp_path: Path) -> None:
     assert cmd[idx + 1] == "cuda"
 
 
+def test_decode_hwaccel_amf_on_decode_to_frames(tmp_path: Path) -> None:
+    ff = FFmpegAdapter()
+    cmd = [str(c) for c in ff.build_decode_to_frames(
+        source=tmp_path / "in.mkv",
+        out_dir=tmp_path / "out",
+        frame_format="png",
+        decode_hwaccel="amf",
+    )]
+    assert "-hwaccel" in cmd
+    idx = cmd.index("-hwaccel")
+    assert cmd[idx + 1] == "amf"
+
+
 def test_decode_hwaccel_flags_on_passthrough_encode(tmp_path: Path) -> None:
     ff = FFmpegAdapter()
     cmd = [str(c) for c in ff.build_passthrough_video_encode(
@@ -212,6 +225,19 @@ def test_decode_hwaccel_cuda_on_passthrough_encode(tmp_path: Path) -> None:
     assert "-hwaccel" in cmd
     idx = cmd.index("-hwaccel")
     assert cmd[idx + 1] == "cuda"
+
+
+def test_decode_hwaccel_amf_on_passthrough_encode(tmp_path: Path) -> None:
+    ff = FFmpegAdapter()
+    cmd = [str(c) for c in ff.build_passthrough_video_encode(
+        source=tmp_path / "in.mkv",
+        video_only_out=tmp_path / "out.mkv",
+        encoder_args=["-c:v", "libx264"],
+        decode_hwaccel="amf",
+    )]
+    assert "-hwaccel" in cmd
+    idx = cmd.index("-hwaccel")
+    assert cmd[idx + 1] == "amf"
 
 
 def test_fused_decode_emits_filter_complex_and_dual_maps(tmp_path: Path) -> None:

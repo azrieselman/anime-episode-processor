@@ -94,6 +94,7 @@ def test_goal_quality_bumps_nvenc_to_p7():
     rec = recommend(_preset("hevc_nvenc"), hardware=_hw(), goal="quality")
     assert rec.encoder.nvenc_preset == "p7"
     assert rec.encoder.nvenc_cq <= 19
+    assert rec.encoder.nvenc_rc_lookahead >= 24
 
 
 def test_goal_speed_relaxes_nvenc():
@@ -112,6 +113,63 @@ def test_software_fallback_for_missing_libx265():
     rec = recommend(_preset("libx265"), hardware=hw)
     # Should fall to hevc_nvenc since GPU has it.
     assert rec.encoder.name == "hevc_nvenc"
+
+
+def test_goal_quality_tunes_qsv_new_fields() -> None:
+    hw = _hw(
+        has_nv=False,
+        arch=None,
+        ffmpeg_encoders=["hevc_qsv", "libx264", "libx265"],
+        qsv_hevc=True,
+        primary_vendor="intel",
+    )
+    rec = recommend(_preset("hevc_qsv"), hardware=hw, goal="quality")
+    assert rec.encoder.qsv_extbrc is True
+    assert rec.encoder.qsv_look_ahead_depth >= 40
+    assert rec.encoder.qsv_low_power is False
+
+
+def test_amf_cqp_disables_vbaq_on_quality_goal() -> None:
+    hw = _hw(
+        has_nv=False,
+        arch=None,
+        ffmpeg_encoders=["hevc_amf", "libx264", "libx265"],
+        amf_hevc=True,
+        primary_vendor="amd",
+    )
+    p = _preset("hevc_amf")
+    p.encoder = p.encoder.model_copy(update={"amf_rc": "cqp", "amf_vbaq": True})
+    rec = recommend(p, hardware=hw, goal="quality")
+    assert rec.encoder.amf_vbaq is False
+    assert any("VBAQ disabled" in r for r in rec.rationale)
+
+
+def test_goal_speed_tunes_amf_new_fields() -> None:
+    hw = _hw(
+        has_nv=False,
+        arch=None,
+        ffmpeg_encoders=["hevc_amf", "libx264", "libx265"],
+        amf_hevc=True,
+        primary_vendor="amd",
+    )
+    rec = recommend(_preset("hevc_amf"), hardware=hw, goal="speed")
+    assert rec.encoder.amf_quality == "speed"
+    assert rec.encoder.amf_preanalysis is False
+    assert rec.encoder.amf_vbaq is False
+
+
+def test_prefer_hardware_encoder_false_skips_hardware_fallback() -> None:
+    hw = _hw(ffmpeg_encoders=["h264_nvenc", "hevc_nvenc", "libx264"])  # no libx265
+    rec = recommend(_preset("libx265"), hardware=hw, prefer_hardware_encoder=False)
+    assert rec.encoder.name == "libx265"
+    assert any("disabled by settings" in w for w in rec.warnings)
+
+
+def test_goal_auto_uses_encoder_cfg_goal() -> None:
+    p = _preset("hevc_nvenc")
+    p.encoder = p.encoder.model_copy(update={"goal": "speed"})
+    rec = recommend(p, hardware=_hw(), goal="auto")
+    assert rec.encoder.nvenc_preset == "p4"
 
 
 def test_rationale_always_records_final_encoder():

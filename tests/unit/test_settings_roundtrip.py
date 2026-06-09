@@ -47,6 +47,13 @@ def test_decode_hwaccel_cuda_roundtrip(tmp_runtime: Path) -> None:
     assert load_settings().hardware.decode_hwaccel == "cuda"
 
 
+def test_decode_hwaccel_amf_roundtrip(tmp_runtime: Path) -> None:
+    s = AppSettings()
+    s.hardware.decode_hwaccel = "amf"
+    save_settings(s)
+    assert load_settings().hardware.decode_hwaccel == "amf"
+
+
 def test_invalid_file_raises(tmp_runtime: Path) -> None:
     p = settings_path()
     p.parent.mkdir(parents=True, exist_ok=True)

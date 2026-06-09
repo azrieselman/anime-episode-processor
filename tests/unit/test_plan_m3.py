@@ -279,22 +279,6 @@ def test_anime4k_unknown_model_emits_warning_but_stays_active() -> None:
     assert any("anime4kcpp:" in w and "not in our catalog" in w for w in warnings)
 
 
-def test_anime4k_legacy_active_with_known_model() -> None:
-    media, primary = _make_media()
-    preset = _make_preset(
-        engine="anime4k-legacy",
-        model="acnet-f8b8-hdn",
-        scale=2,
-        denoise=1,
-        interp_enabled=False,
-        pp_enabled=False,
-    )
-    plan, warnings, _r = _plan_m3_video_path(preset, media, primary)
-    assert plan["upscale"]["active"] is True
-    assert plan["upscale"]["engine"] == "anime4k-legacy"
-    assert not any(w.startswith("anime4k-legacy:") for w in warnings)
-
-
 def test_anime4k_vs_active_with_known_model() -> None:
     media, primary = _make_media()
     preset = _make_preset(
@@ -403,6 +387,13 @@ def test_decode_hwaccel_cuda_is_written_to_decode_plan() -> None:
     assert plan["decode"]["hwaccel"] == "cuda"
 
 
+def test_decode_hwaccel_amf_is_written_to_decode_plan() -> None:
+    media, primary = _make_media()
+    preset = _make_preset(upscaler_enabled=False, interp_enabled=False, pp_enabled=True, pp_deband=True)
+    plan, _w, _r = _plan_m3_video_path(preset, media, primary, decode_hwaccel="amf")
+    assert plan["decode"]["hwaccel"] == "amf"
+
+
 def test_decode_plan_png_intermediate_codec_default() -> None:
     media, primary = _make_media()
     preset = _make_preset(upscaler_enabled=False, interp_enabled=False, pp_enabled=True, pp_deband=True)
@@ -432,6 +423,10 @@ def test_resolve_decode_hwaccel_auto_non_windows(monkeypatch) -> None:
 
 def test_resolve_decode_hwaccel_cuda() -> None:
     assert _resolve_decode_hwaccel("cuda") == "cuda"
+
+
+def test_resolve_decode_hwaccel_amf() -> None:
+    assert _resolve_decode_hwaccel("amf") == "amf"
 
 
 # ---------- input_source chain --------------------------------------------

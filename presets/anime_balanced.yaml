@@ -2,12 +2,12 @@ meta:
   id: anime_balanced
   name: Anime Balanced 1440p
   description: >
-    Default preset. Strong line-art fidelity for cel anime with sensible speed.
-    Anime4K ACNet F8B8 HDN 2x (CUDA with OpenCL fallback) + RIFE v4.22-lite 2x interpolation + HEVC NVENC at p6/CQ19.
-    Tuned for RTX 3080 10GB.
+    Default preset with strong line-art fidelity and balanced speed.
+    Anime4K ACNet F8B8 HDN 2x plus RIFE v4.25-lite 2x interpolation, tuned
+    with parity settings for NVENC, QSV, and AMF paths.
   builtin: true
   suitable_for: [anime_2d, anime_compressed]
-  target_hardware: "RTX 3080 10GB"
+  target_hardware: "Modern NVIDIA, Intel, or AMD GPU; CPU fallback supported"
 container: mkv
 target_resolution:
   mode: named
@@ -38,27 +38,38 @@ interpolation:
   scene_change_threshold_percent: 35.0
 encoder:
   name: hevc_nvenc
+  goal: auto
   nvenc_preset: p6
   nvenc_tune: hq
   nvenc_rc: vbr
   nvenc_cq: 19
   nvenc_multipass: qres
+  nvenc_rc_lookahead: 32
   nvenc_spatial_aq: true
   nvenc_temporal_aq: false
   nvenc_bframes: 3
   nvenc_b_ref_mode: middle
   qsv_preset: medium
-  qsv_global_quality: 26
+  qsv_global_quality: 22
+  qsv_extbrc: true
+  qsv_look_ahead_depth: 40
+  qsv_bf: 3
+  qsv_low_power: false
   amf_quality: quality
   amf_rc: cqp
-  amf_qp_i: 22
-  amf_qp_p: 22
+  amf_qp_i: 19
+  amf_qp_p: 19
+  amf_qp_b: 20
+  amf_preanalysis: true
+  amf_vbaq: false
+  amf_g: 250
   x_crf: 18
   x_preset: slow
   x_tune: animation
+  x265_params: aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:rd=4
   extra_args: []
 decode:
-  hwaccel: cuda
+  hwaccel: auto
   png_intermediate_codec: mjpeg
 frame_dedupe:
   enabled: false

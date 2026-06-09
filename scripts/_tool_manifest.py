@@ -188,30 +188,6 @@ ANIME4KCPP_PIN = ToolPin(
     ),
 )
 
-ANIME4KCPP_LEGACY_PIN = ToolPin(
-    tool_id="anime4k-legacy",
-    subdir="anime4k-legacy",
-    version="2.5.0",
-    archive_url=(
-        "https://github.com/TianZerL/Anime4KCPP/releases/download/"
-        "v2.5.0/Anime4KCPP_CLI-2.5.0-Win64-msvc.7z"
-    ),
-    archive_sha256="b5bb8eb9ea6eb8e7ce00cd3d9165f477ca03cf51a70b3fc9ddfdb385df47dba3",
-    archive_format="7z",
-    files=(
-        ("CLI/Anime4KCPP_CLI/Anime4KCPP_CLI.exe", "Anime4KCPP_CLI.exe"),
-        ("CLI/Anime4KCPP_CLI/Anime4KCPPCore.dll", "Anime4KCPPCore.dll"),
-        ("CLI/Anime4KCPP_CLI/concrt140.dll", "concrt140.dll"),
-        ("CLI/Anime4KCPP_CLI/msvcp140.dll", "msvcp140.dll"),
-        ("CLI/Anime4KCPP_CLI/opencv_videoio_ffmpeg450_64.dll", "opencv_videoio_ffmpeg450_64.dll"),
-        ("CLI/Anime4KCPP_CLI/opencv_videoio_msmf450_64.dll", "opencv_videoio_msmf450_64.dll"),
-        ("CLI/Anime4KCPP_CLI/opencv_world450.dll", "opencv_world450.dll"),
-        ("CLI/Anime4KCPP_CLI/openh264-1.8.0-win64.dll", "openh264-1.8.0-win64.dll"),
-        ("CLI/Anime4KCPP_CLI/vcruntime140.dll", "vcruntime140.dll"),
-        ("CLI/Anime4KCPP_CLI/vcruntime140_1.dll", "vcruntime140_1.dll"),
-    ),
-)
-
 ANIME4KCPP_VS_FILTER_PIN = ToolPin(
     tool_id="anime4kcpp-vs",
     subdir="anime4kcpp-filter-vs",
@@ -263,7 +239,6 @@ ALL_PINS: tuple[ToolPin, ...] = (
     RIFE_PIN,
     WAIFU2X_PIN,
     ANIME4KCPP_PIN,
-    ANIME4KCPP_LEGACY_PIN,
     ANIME4KCPP_VS_FILTER_PIN,
     VAPOURSYNTH_PORTABLE_PIN,
     FFMS2_VAPOURSYNTH_PIN,

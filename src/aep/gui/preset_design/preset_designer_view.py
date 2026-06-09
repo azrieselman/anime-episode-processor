@@ -97,7 +97,9 @@ class PresetDesignerView(QWidget):
         splitter.setSizes([280, 820])
         root.addWidget(splitter, 1)
 
-        editor_root, self._bindings = build_preset_editor(on_changed=self._mark_dirty)
+        editor_root, self._bindings, self._refresh_editor_visibility = build_preset_editor(
+            on_changed=self._mark_dirty,
+        )
         self._editor_layout.addWidget(editor_root, 1)
 
         self._reload_list_only()
@@ -180,6 +182,7 @@ class PresetDesignerView(QWidget):
     def _apply_bindings(self) -> None:
         for b in self._bindings:
             b.apply(self._working)
+        self._refresh_editor_visibility()
 
     def _commit_bindings(self) -> None:
         for b in self._bindings:
