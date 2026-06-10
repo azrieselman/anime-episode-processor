@@ -6,6 +6,8 @@ All external-tool invocations go through `run_capture` or `run_streaming`. They:
   ``exec_log_summary`` to ``run_capture`` when argv is intentionally huge (e.g.
   batched Anime4KCPP ``-i``/``-o`` lists) while still retaining the real argv in
   ``ProcResult`` for failures.
+* At DEBUG log level, emit full stdout/stderr for every command (line-by-line for
+  ``run_streaming``).
 * Apply a default timeout (long for media work; callers can override).
 * Use `shell=False` always — paths are passed as a list.
 * Disable inherited stdin and use UTF-8 decoding.
@@ -82,6 +84,22 @@ def _creation_flags() -> int:
     return 0
 
 
+def _log_cmd_output(
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int | None = None,
+) -> None:
+    if not log.isEnabledFor(logging.DEBUG):
+        return
+    if stdout:
+        log.debug("stdout:\n%s", stdout.rstrip("\n"))
+    if stderr:
+        log.debug("stderr:\n%s", stderr.rstrip("\n"))
+    if returncode is not None:
+        log.debug("exit=%s", returncode)
+
+
 def run_capture(
     cmd: list[str | os.PathLike[str]],
     *,
@@ -121,7 +139,9 @@ def run_capture(
             stdout = stdout.decode("utf-8", errors="replace")
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
-        raise ProcError(ProcResult(str_cmd, -1, stdout, stderr + "\n[timeout]")) from exc
+        stderr = stderr + "\n[timeout]"
+        _log_cmd_output(stdout=stdout, stderr=stderr, returncode=-1)
+        raise ProcError(ProcResult(str_cmd, -1, stdout, stderr)) from exc
 
     elapsed = time.monotonic() - started
     stats = _PROC_STATS.get()
@@ -130,6 +150,11 @@ def run_capture(
         stats["capture_calls"] += 1
         stats["wall_s"] += elapsed
     result = ProcResult(str_cmd, completed.returncode, completed.stdout, completed.stderr)
+    _log_cmd_output(
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        returncode=completed.returncode,
+    )
     if check and completed.returncode != 0:
         log.error("exit=%s stderr=%s", completed.returncode, completed.stderr.strip()[:500])
         raise ProcError(result)
@@ -178,7 +203,10 @@ def run_streaming(
         try:
             for line in stream:
                 buf.append(line)
-                _emit(tag, line.rstrip("\n"))
+                text = line.rstrip("\n")
+                if log.isEnabledFor(logging.DEBUG):
+                    log.debug("%s: %s", tag, text)
+                _emit(tag, text)
         finally:
             stream.close()
 
@@ -230,7 +258,10 @@ def run_streaming(
         stats["calls"] += 1
         stats["streaming_calls"] += 1
         stats["wall_s"] += elapsed
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("exit=%s", proc.returncode)
     if interrupted_reason is not None:
         raise ProcInterrupted(interrupted_reason, result)
     if proc.returncode != 0:
+        log.error("exit=%s stderr=%s", proc.returncode, result.stderr.strip()[:500])
         raise ProcError(result)

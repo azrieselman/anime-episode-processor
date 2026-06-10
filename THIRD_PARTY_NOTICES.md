@@ -14,7 +14,7 @@ the upstream archive ships one).
 
 | Tool | Pinned version | Upstream | License |
 | --- | --- | --- | --- |
-| FFmpeg / FFprobe (gyan.dev essentials build) | n7.0.2 | <https://www.gyan.dev/ffmpeg/builds/> · <https://github.com/GyanD/codexffmpeg> | LGPL-2.1-or-later (essentials build) |
+| FFmpeg / FFprobe (gyan.dev full build) | n8.1.1 | <https://www.gyan.dev/ffmpeg/builds/> · <https://github.com/GyanD/codexffmpeg> | GPL-3.0-only (full build) |
 | MKVToolNix (mkvmerge, mkvpropedit, mkvinfo) | 85.0 | <https://mkvtoolnix.download/> | GPL-2.0-or-later |
 | Real-CUGAN (ncnn-vulkan) | 20220728 | <https://github.com/nihui/realcugan-ncnn-vulkan> | MIT |
 | Real-ESRGAN (ncnn-vulkan) | v0.2.0 | <https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan> | BSD-3-Clause |
@@ -53,10 +53,8 @@ authors:
 
 ## FFmpeg note
 
-The pinned gyan.dev "essentials" FFmpeg build is the LGPL-only configuration
-(no `--enable-gpl`). It includes NVENC, libx264, libx265, libsvtav1, and
-libaom-av1. AEP does not link against FFmpeg's libraries; it spawns the
-ffmpeg/ffprobe executables as subprocesses.
-
-If a future release switches to a GPL-enabled FFmpeg build, this notice will
-be updated to reflect that and to point at the corresponding source archive.
+The pinned gyan.dev "full" FFmpeg build is GPL-licensed and includes both
+hardware encoder families (NVENC/QSV/AMF/D3D12/Vulkan depending on runtime
+driver support) and broad software codec/filter support. AEP does not link
+against FFmpeg's libraries; it spawns the ffmpeg/ffprobe executables as
+subprocesses.

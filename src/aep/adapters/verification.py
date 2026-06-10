@@ -90,7 +90,7 @@ def check_adapter(adapter: ToolAdapter) -> ToolStatus:
             note=str(exc),
         )
     status: StatusValue = "ok"
-    # Pinned versions for ffmpeg use a leading "n" ("n7.0.2") that ffmpeg's
+    # Pinned versions for ffmpeg use a leading "n" ("n8.1.1") that ffmpeg's
     # `-version` output drops, so strip it before prefix-matching.
     if expected and not version.startswith(expected.lstrip("n")):
         status = "mismatch"

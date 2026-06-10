@@ -412,7 +412,7 @@ def test_decode_plan_png_intermediate_codec_from_preset() -> None:
 def test_resolve_decode_hwaccel_auto_windows(monkeypatch) -> None:
     import aep.pipeline.stages.s01_plan as s01
     monkeypatch.setattr(s01.os, "name", "nt")
-    assert _resolve_decode_hwaccel("auto") == "d3d11va"
+    assert _resolve_decode_hwaccel("auto") == "d3d12va"
 
 
 def test_resolve_decode_hwaccel_auto_non_windows(monkeypatch) -> None:
@@ -427,6 +427,14 @@ def test_resolve_decode_hwaccel_cuda() -> None:
 
 def test_resolve_decode_hwaccel_amf() -> None:
     assert _resolve_decode_hwaccel("amf") == "amf"
+
+
+def test_resolve_decode_hwaccel_d3d12va() -> None:
+    assert _resolve_decode_hwaccel("d3d12va") == "d3d12va"
+
+
+def test_resolve_decode_hwaccel_vulkan() -> None:
+    assert _resolve_decode_hwaccel("vulkan") == "vulkan"
 
 
 # ---------- input_source chain --------------------------------------------

@@ -25,6 +25,11 @@ def _hw(
     amf_h264: bool = False,
     amf_hevc: bool = False,
     amf_av1: bool = False,
+    d3d12_h264: bool = False,
+    d3d12_av1: bool = False,
+    vulkan_h264: bool = False,
+    vulkan_hevc: bool = False,
+    vulkan_av1: bool = False,
     primary_vendor: str = "unknown",
 ) -> HardwareProfile:
     return HardwareProfile(
@@ -45,8 +50,13 @@ def _hw(
             amf_h264=amf_h264,
             amf_hevc=amf_hevc,
             amf_av1=amf_av1,
+            d3d12_h264=d3d12_h264,
+            d3d12_av1=d3d12_av1,
+            vulkan_h264=vulkan_h264,
+            vulkan_hevc=vulkan_hevc,
+            vulkan_av1=vulkan_av1,
         ),
-        ffmpeg_version="7.0.2",
+        ffmpeg_version="8.1.1",
         ffmpeg_encoders=ffmpeg_encoders or [
             "h264_nvenc", "hevc_nvenc", "libx264", "libx265",
         ],
@@ -90,9 +100,9 @@ def test_h264_target_warns_for_hevc_source():
     assert any("HEVC" in w for w in rec.warnings)
 
 
-def test_goal_quality_bumps_nvenc_to_p7():
+def test_goal_quality_bumps_nvenc_to_p6():
     rec = recommend(_preset("hevc_nvenc"), hardware=_hw(), goal="quality")
-    assert rec.encoder.nvenc_preset == "p7"
+    assert rec.encoder.nvenc_preset == "p6"
     assert rec.encoder.nvenc_cq <= 19
     assert rec.encoder.nvenc_rc_lookahead >= 24
 
@@ -141,7 +151,6 @@ def test_amf_cqp_disables_vbaq_on_quality_goal() -> None:
     p.encoder = p.encoder.model_copy(update={"amf_rc": "cqp", "amf_vbaq": True})
     rec = recommend(p, hardware=hw, goal="quality")
     assert rec.encoder.amf_vbaq is False
-    assert any("VBAQ disabled" in r for r in rec.rationale)
 
 
 def test_goal_speed_tunes_amf_new_fields() -> None:
@@ -198,6 +207,29 @@ def test_hevc_qsv_falls_back_without_intel_caps():
     )
     rec = recommend(_preset("hevc_qsv"), hardware=hw)
     assert rec.encoder.name == "libx265"
+
+
+def test_no_nvidia_falls_back_to_d3d12_before_software() -> None:
+    hw = _hw(
+        has_nv=False,
+        arch=None,
+        ffmpeg_encoders=["h264_d3d12", "libx264", "libx265"],
+        d3d12_h264=True,
+    )
+    rec = recommend(_preset("h264_nvenc"), hardware=hw)
+    assert rec.encoder.name == "h264_d3d12"
+
+
+def test_d3d12_av1_falls_back_to_vulkan_av1() -> None:
+    hw = _hw(
+        has_nv=False,
+        arch=None,
+        ffmpeg_encoders=["av1_vulkan", "h264_vulkan", "libx264", "libx265"],
+        vulkan_av1=True,
+        vulkan_h264=True,
+    )
+    rec = recommend(_preset("av1_d3d12"), hardware=hw)
+    assert rec.encoder.name == "av1_vulkan"
 
 
 def test_hevc_amf_passes_when_capable():

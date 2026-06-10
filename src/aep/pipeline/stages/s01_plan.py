@@ -41,6 +41,7 @@ from aep.adapters.realesrgan import RealesrganAdapter
 from aep.adapters.rife import RifeAdapter
 from aep.adapters.waifu2x import Waifu2xAdapter
 from aep.bench.hardware import HardwareProfile, probe_hardware
+from aep.bench.segment import BenchmarkSegment, resolve_benchmark_segment, segment_batch_spec
 from aep.encode.recommender import recommend
 from aep.errors import PipelineError
 from aep.media.extent import enrich_media_decodable_extent
@@ -173,6 +174,18 @@ class PlanStage(BaseStage):
         for r in m3_rationale:
             events.emit(StageEvent(ctx.job_id, self.name, "log", message=f"video path: {r}"))
 
+        benchmark_segment = _resolve_benchmark_segment_for_plan(ctx=ctx, media=media)
+        if benchmark_segment is not None:
+            events.emit(StageEvent(
+                ctx.job_id,
+                self.name,
+                "log",
+                message=(
+                    "benchmark segment: "
+                    f"{benchmark_segment.start_s:.3f}…{benchmark_segment.end_s:.3f}s"
+                ),
+            ))
+
         # 6. Estimate peak frame-storage bytes for ramdisk free-space guard.
         # Computed here because the planner is the only stage that knows both the
         # final geometry and the interpolation multiplier; the broker writes the
@@ -183,6 +196,12 @@ class PlanStage(BaseStage):
             target_h=target_h,
             m3_plan=m3_plan,
         )
+        if benchmark_segment is not None:
+            ramdisk_estimate = _scaled_frame_estimate_for_segment(
+                media=media,
+                full_estimate=ramdisk_estimate,
+                segment=benchmark_segment,
+            )
         ctx.ramdisk_estimate_bytes = ramdisk_estimate
 
         # 6b. Batch plan. Stage 04+ check `ctx.plan["batches"]` non-empty to
@@ -197,6 +216,16 @@ class PlanStage(BaseStage):
             m3_plan=m3_plan,
             ramdisk_estimate=ramdisk_estimate,
         )
+        if benchmark_segment is not None:
+            batches, batching_resolve = _apply_benchmark_segment_to_batches(
+                benchmark_segment=benchmark_segment,
+                m3_plan=m3_plan,
+                target_w=target_w,
+                target_h=target_h,
+                primary=primary,
+                batches=batches,
+                batching_resolve=batching_resolve,
+            )
         encode_input_mode = _compute_encode_input_mode(m3_plan, preset, len(batches))
         _apply_encode_input_mode(
             m3_plan,
@@ -321,6 +350,7 @@ class PlanStage(BaseStage):
                 "duration_clamped_from_format": batching_resolve.get(
                     "duration_clamped_from_format",
                 ),
+                "benchmark_segment": batching_resolve.get("benchmark_segment"),
                 "decodable_end_s": (
                     media.primary_video.decodable_end_s
                     if media.primary_video is not None
@@ -467,6 +497,89 @@ def _estimate_frame_bytes(
 
 
 # ---------- batch planner glue --------------------------------------------
+
+
+def _resolve_benchmark_segment_for_plan(
+    *,
+    ctx: PipelineContext,
+    media,
+) -> BenchmarkSegment | None:
+    raw = ctx.extras.get("benchmark")
+    if not isinstance(raw, dict):
+        return None
+    planning_duration = resolve_planning_duration_s(media)
+    if planning_duration <= 0:
+        return None
+    try:
+        start_s = float(raw.get("start_s", 0.0))
+        duration_s = float(raw.get("duration_s", 30.0))
+    except (TypeError, ValueError):
+        log.warning("benchmark segment ignored: invalid start/duration in ctx.extras")
+        return None
+    try:
+        return resolve_benchmark_segment(
+            source_duration_s=float(planning_duration),
+            start_s=start_s,
+            duration_s=duration_s,
+        )
+    except ValueError:
+        log.warning("benchmark segment ignored: could not resolve segment window")
+        return None
+
+
+def _scaled_frame_estimate_for_segment(
+    *,
+    media,
+    full_estimate: int,
+    segment: BenchmarkSegment,
+) -> int:
+    if full_estimate <= 0:
+        return full_estimate
+    planning_duration = resolve_planning_duration_s(media)
+    if planning_duration <= 0:
+        return full_estimate
+    ratio = max(0.0, min(1.0, segment.duration_s / float(planning_duration)))
+    if ratio <= 0:
+        return full_estimate
+    scaled = int(full_estimate * ratio)
+    if scaled <= 0:
+        return 1
+    return scaled
+
+
+def _apply_benchmark_segment_to_batches(
+    *,
+    benchmark_segment: BenchmarkSegment,
+    m3_plan: dict[str, Any],
+    target_w: int | None,
+    target_h: int | None,
+    primary,
+    batches: list[BatchSpec],
+    batching_resolve: dict[str, Any],
+) -> tuple[list[BatchSpec], dict[str, Any]]:
+    meta = dict(batching_resolve)
+    meta["benchmark_segment"] = benchmark_segment.to_dict()
+    meta["benchmark_base_batch_count"] = len(batches)
+    decode_cfg = m3_plan.setdefault("decode", {})
+    decode_cfg["pts_window"] = [benchmark_segment.start_s, benchmark_segment.end_s]
+
+    if str(m3_plan.get("encode_input_mode", "source")) != "frames":
+        return [], meta
+
+    bytes_per_frame = _bytes_per_output_frame(
+        primary=primary,
+        target_w=target_w,
+        target_h=target_h,
+        m3_plan=m3_plan,
+    )
+    output_fps = _output_fps_numeric(m3_plan)
+    return [
+        segment_batch_spec(
+            segment=benchmark_segment,
+            output_fps=output_fps,
+            bytes_per_output_frame=bytes_per_frame,
+        ),
+    ], meta
 
 
 def _output_fps_numeric(m3_plan: dict[str, Any]) -> float | None:
@@ -1153,10 +1266,14 @@ def _resolve_decode_hwaccel(mode: str) -> str:
     m = (mode or "auto").lower()
     if m == "off":
         return "off"
+    if m == "d3d12va":
+        return "d3d12va"
     if m == "d3d11va":
         return "d3d11va"
+    if m == "vulkan":
+        return "vulkan"
     if m == "cuda":
         return "cuda"
     if m == "amf":
         return "amf"
-    return "d3d11va" if os.name == "nt" else "off"
+    return "d3d12va" if os.name == "nt" else "off"

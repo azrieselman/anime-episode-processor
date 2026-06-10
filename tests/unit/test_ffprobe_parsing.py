@@ -65,7 +65,7 @@ SAMPLE = {
 
 
 class _FakeAdapter:
-    version = "n7.0.2"
+    version = "n8.1.1"
 
     def probe_full_json(self, _: Path) -> str:
         return json.dumps(SAMPLE)

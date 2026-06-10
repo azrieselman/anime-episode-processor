@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from aep.adapters.ffmpeg import decode_hwaccel_uses_hardware_decode
+from aep.adapters.ffmpeg import decode_hwaccel_fallback_chain, decode_hwaccel_uses_hardware_decode
 from aep.persist.presets import EncoderCfg
 from aep.pipeline.context import PipelineContext
 from aep.pipeline.events import EventSink
@@ -44,7 +44,7 @@ def _make_ctx(tmp_path: Path) -> PipelineContext:
 
 
 def _hwaccel_token_in_cmd(cmd_strs: list[str]) -> bool:
-    return any(t in cmd_strs for t in ("d3d11va", "cuda", "amf"))
+    return any(t in cmd_strs for t in ("d3d12va", "d3d11va", "vulkan", "cuda", "amf"))
 
 
 def _make_streaming_fake(calls: list[list[str]]):
@@ -69,11 +69,26 @@ def _make_capture_fake(calls: list[list[str]]):
 
 
 def test_decode_hwaccel_uses_hardware_decode() -> None:
+    assert decode_hwaccel_uses_hardware_decode("d3d12va") is True
     assert decode_hwaccel_uses_hardware_decode("cuda") is True
     assert decode_hwaccel_uses_hardware_decode("d3d11va") is True
+    assert decode_hwaccel_uses_hardware_decode("vulkan") is True
     assert decode_hwaccel_uses_hardware_decode("amf") is True
     assert decode_hwaccel_uses_hardware_decode("off") is False
     assert decode_hwaccel_uses_hardware_decode("") is False
+
+
+def test_decode_hwaccel_fallback_chain_order() -> None:
+    import os
+
+    assert decode_hwaccel_fallback_chain("d3d12va") == ("d3d11va", "off")
+    if os.name == "nt":
+        assert decode_hwaccel_fallback_chain("vulkan") == ("d3d12va", "d3d11va", "off")
+        assert decode_hwaccel_fallback_chain("amf") == ("d3d12va", "d3d11va", "off")
+    else:
+        assert decode_hwaccel_fallback_chain("vulkan") == ("off",)
+        assert decode_hwaccel_fallback_chain("amf") == ("off",)
+    assert decode_hwaccel_fallback_chain("off") == ()
 
 
 def _successful_streaming(calls: list[list[str]]):
@@ -150,6 +165,38 @@ def test_decode_stage_retries_without_hwaccel(monkeypatch, tmp_path: Path) -> No
     assert len(calls) == 2
     assert "d3d11va" in calls[0]
     assert "off" in calls[1]
+
+
+def test_decode_stage_d3d12_falls_back_to_d3d11_then_off(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "aep.pipeline.stages.s04_decode_serve.run_streaming",
+        _make_streaming_fake(calls),
+    )
+    monkeypatch.setattr(
+        "aep.pipeline.stages.s04_decode_serve.run_capture",
+        _make_capture_fake(calls),
+    )
+    monkeypatch.setattr(
+        PipelineContext,
+        "get_frame_manifest",
+        lambda *a, **k: {"count": 2, "bytes": 0},
+    )
+
+    stage = DecodeServeStage(ffmpeg=_FakeFFmpeg())
+    ctx = _make_ctx(tmp_path)
+    ctx.plan = {"decode": {"target_w": None, "target_h": None}, "hdr": {}}
+    plan = StagePlan(
+        stage_name="04_decode_serve",
+        cache_key="k",
+        params={"active": True, "frame_format": "png", "bt709_normalize": True, "decode_hwaccel": "d3d12va"},
+        outputs=[tmp_path / "frames"],
+    )
+    stage.run(ctx, plan, EventSink())
+    assert len(calls) == 3
+    assert "d3d12va" in calls[0]
+    assert "d3d11va" in calls[1]
+    assert "off" in calls[2]
 
 
 def test_decode_stage_retries_without_hwaccel_cuda(monkeypatch, tmp_path: Path) -> None:
@@ -248,9 +295,9 @@ def test_decode_stage_retries_without_hwaccel_amf(monkeypatch, tmp_path: Path) -
         outputs=[tmp_path / "frames"],
     )
     stage.run(ctx, plan, EventSink())
-    assert len(calls) == 2
+    assert len(calls) >= 2
     assert "amf" in calls[0]
-    assert "off" in calls[1]
+    assert any("off" in c for c in calls[1:])
 
 
 def test_encode_source_retries_without_hwaccel_cuda(monkeypatch, tmp_path: Path) -> None:

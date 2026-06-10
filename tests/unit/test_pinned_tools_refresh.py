@@ -34,14 +34,14 @@ def test_pins_to_refresh_dedupes_ffprobe_vs_ffmpeg_mismatch(
             tool_id="ffmpeg",
             path="x",
             version="wrong",
-            expected="n7.0.2",
+            expected="n8.1.1",
             status="mismatch",
         ),
         ToolStatus(
             tool_id="ffprobe",
             path="y",
             version="wrong",
-            expected="n7.0.2",
+            expected="n8.1.1",
             status="mismatch",
         ),
     ]
@@ -61,7 +61,7 @@ def test_pins_to_refresh_ignores_version_unknown(monkeypatch: pytest.MonkeyPatch
             tool_id="ffmpeg",
             path="x",
             version="(probe failed)",
-            expected="n7.0.2",
+            expected="n8.1.1",
             status="version_unknown",
             note="boom",
         ),
@@ -84,7 +84,7 @@ def test_pins_to_refresh_single_archive_mismatch_skips_manifest_missing_pins(
             tool_id="ffmpeg",
             path=r"C:\ffmpeg.exe",
             version="wrong",
-            expected="n7.0.2",
+            expected="n8.1.1",
             status="mismatch",
         ),
     ]
@@ -108,7 +108,7 @@ def test_pins_to_refresh_two_archives_out_of_date_keeps_manifest_union(
             tool_id="ffmpeg",
             path="x",
             version="bad",
-            expected="n7.0.2",
+            expected="n8.1.1",
             status="mismatch",
         ),
         ToolStatus(

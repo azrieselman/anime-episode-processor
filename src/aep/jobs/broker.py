@@ -119,6 +119,17 @@ def _runtime_mark_resumed(job: Job, now_iso: str) -> None:
     _store_runtime_meta(job, meta)
 
 
+def _runtime_accumulate_idle(job: Job, from_iso: str, to_iso: str) -> None:
+    """Add idle wall time to ``paused_accum_s`` (failed / waiting periods)."""
+    from_s = _parse_timestamp_s(from_iso)
+    to_s = _parse_timestamp_s(to_iso)
+    if from_s is None or to_s is None or to_s <= from_s:
+        return
+    meta = _runtime_meta(job)
+    meta["paused_accum_s"] = _runtime_paused_accum_s(job) + (to_s - from_s)
+    _store_runtime_meta(job, meta)
+
+
 def _reset_job_to_blank_queued(job: Job, *, bump_created_at: bool = False) -> None:
     """Clear runtime fields so the row matches a freshly enqueued job.
 
@@ -419,6 +430,11 @@ class JobBroker:
         job = get_job(job_id)
         if job is None or job.state != JobState.FAILED:
             return None
+        now_iso = _now()
+        # While FAILED, active elapsed freezes at ``finished_at``. Clearing it
+        # without accounting for the idle window would make the GUI timer jump.
+        if job.finished_at:
+            _runtime_accumulate_idle(job, job.finished_at, now_iso)
         job.state = JobState.QUEUED
         job.error = None
         job.finished_at = None

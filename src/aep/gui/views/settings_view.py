@@ -132,9 +132,11 @@ class SettingsView(QWidget):
         self._prefer_hardware_encoder = QCheckBox("Prefer GPU hardware encoding when available")
         hf.addRow("", self._prefer_hardware_encoder)
         self._decode_hwaccel = QComboBox()
-        self._decode_hwaccel.addItem("Auto (D3D11VA on Windows)", "auto")
+        self._decode_hwaccel.addItem("Auto (D3D12VA on Windows)", "auto")
         self._decode_hwaccel.addItem("Off (software decode)", "off")
+        self._decode_hwaccel.addItem("DirectX D3D12VA", "d3d12va")
         self._decode_hwaccel.addItem("DirectX D3D11VA", "d3d11va")
+        self._decode_hwaccel.addItem("Vulkan Video", "vulkan")
         self._decode_hwaccel.addItem("NVIDIA NVDEC (CUDA)", "cuda")
         self._decode_hwaccel.addItem("AMD AMF", "amf")
         self._decode_hwaccel.setToolTip(

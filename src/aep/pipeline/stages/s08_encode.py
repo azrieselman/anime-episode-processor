@@ -22,8 +22,9 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
-from aep.adapters.ffmpeg import FFmpegAdapter, decode_hwaccel_has_sw_fallback, raise_if_failed
+from aep.adapters.ffmpeg import FFmpegAdapter, decode_hwaccel_fallback_chain, raise_if_failed
 from aep.encode.encoders import EncodeBuildResult, _is_10bit_pix_fmt, build_encoder_args
 from aep.errors import CancelledError, EncodeError, PausedError, PipelineError
 from aep.persist.presets import EncoderCfg
@@ -192,6 +193,7 @@ class EncodeStage(BaseStage):
 
         final_build: EncodeBuildResult | None = None
         result: ProcResult | None = None
+        benchmark_verbose = _benchmark_verbose_enabled(ctx)
 
         for strat_idx, (attempt_cfg, pix_override) in enumerate(strategies):
             eff_pix = pix_override if pix_override is not None else source_pix
@@ -206,10 +208,16 @@ class EncodeStage(BaseStage):
             if strat_idx == 0:
                 for r in build.rationale:
                     events.emit(StageEvent(ctx.job_id, self.name, "log", message=r))
-            gp = list(build.global_prefix) if build.global_prefix else None
+            gp = list(build.global_prefix) if build.global_prefix else []
+            gp += _benchmark_global_prefix(ctx)
             if mode == "frames":
                 cmd = self._build_frames_cmd(
-                    ctx, plan, out_path, build_args=build.args, global_prefix=gp,
+                    ctx,
+                    plan,
+                    out_path,
+                    build_args=build.args,
+                    global_prefix=gp or None,
+                    progress=benchmark_verbose,
                 )
             else:
                 cmd = self._ffmpeg.build_passthrough_video_encode(
@@ -217,47 +225,80 @@ class EncodeStage(BaseStage):
                     video_only_out=out_path,
                     encoder_args=build.args,
                     decode_hwaccel=decode_hwaccel,
-                    progress=False,
+                    progress=benchmark_verbose,
                     allow_overwrite=True,
                     start_pts=start_pts,
                     end_pts=end_pts,
-                    global_prefix=gp,
+                    global_prefix=gp or None,
                 )
 
             try:
                 stderr_lines: list[str] = []
+                progress_buf: dict[str, str] = {}
                 for stream, line in run_streaming(
                     cmd,
                     should_interrupt=lambda: "cancel" if ctx.cancel_event.is_set() else (
                         "pause" if ctx.pause_event.is_set() else None
                     ),
                 ):
+                    if stream == "stdout" and benchmark_verbose:
+                        key, sep, value = line.partition("=")
+                        if sep:
+                            progress_buf[key.strip()] = value.strip()
+                            if key.strip() == "progress":
+                                sample = _build_benchmark_encode_sample(progress_buf)
+                                _record_benchmark_encode_sample(ctx, sample)
+                                events.emit(StageEvent(
+                                    ctx.job_id,
+                                    self.name,
+                                    "progress",
+                                    message=f"encode progress: {sample.get('progress', 'n/a')}",
+                                    fps=_sample_fps(sample),
+                                    extra={"encode_sample": sample},
+                                ))
+                                progress_buf = {"progress": progress_buf.get("progress", "")}
+                        continue
                     if stream == "stderr":
                         stderr_lines.append(line)
+                        if benchmark_verbose:
+                            events.emit(StageEvent(
+                                ctx.job_id,
+                                self.name,
+                                "log",
+                                message=line,
+                                extra={"ffmpeg_line": line},
+                            ))
                 result = ProcResult([str(c) for c in cmd], 0, "", "\n".join(stderr_lines))
             except ProcError as exc:
-                if mode == "source" and decode_hwaccel_has_sw_fallback(decode_hwaccel):
-                    events.emit(StageEvent(
-                        ctx.job_id,
-                        self.name,
-                        "warning",
-                        message=(
-                            f"encode: hardware decode ({decode_hwaccel}) failed; "
-                            "retrying with software decode"
-                        ),
-                    ))
-                    fallback_cmd = self._ffmpeg.build_passthrough_video_encode(
-                        source=ctx.source_path,
-                        video_only_out=out_path,
-                        encoder_args=build.args,
-                        decode_hwaccel="off",
-                        progress=False,
-                        allow_overwrite=True,
-                        start_pts=start_pts,
-                        end_pts=end_pts,
-                        global_prefix=gp,
-                    )
-                    result = run_capture(fallback_cmd, timeout=24 * 3600.0, check=False)
+                fallback_modes = decode_hwaccel_fallback_chain(decode_hwaccel)
+                if mode == "source" and fallback_modes:
+                    result = exc.result
+                    for fb_mode in fallback_modes:
+                        events.emit(StageEvent(
+                            ctx.job_id,
+                            self.name,
+                            "warning",
+                            message=(
+                                f"encode: hardware decode ({decode_hwaccel}) failed; "
+                                f"retrying with {fb_mode} decode"
+                            ),
+                        ))
+                        fallback_cmd = self._ffmpeg.build_passthrough_video_encode(
+                            source=ctx.source_path,
+                            video_only_out=out_path,
+                            encoder_args=build.args,
+                            decode_hwaccel=fb_mode,
+                            progress=False,
+                            allow_overwrite=True,
+                            start_pts=start_pts,
+                            end_pts=end_pts,
+                            global_prefix=gp,
+                        )
+                        result = run_capture(fallback_cmd, timeout=24 * 3600.0, check=False)
+                        if benchmark_verbose:
+                            _emit_stderr_as_ffmpeg_lines(ctx, events, result.stderr)
+                        if result.returncode == 0:
+                            break
                 else:
                     result = exc.result
             except ProcInterrupted as exc:
@@ -367,6 +408,7 @@ class EncodeStage(BaseStage):
         *,
         build_args: list[str],
         global_prefix: list[str | Path] | None = None,
+        progress: bool = False,
     ) -> list[str | Path]:
         in_dir = self._resolve_frame_dir(ctx)
         if not in_dir:
@@ -410,7 +452,7 @@ class EncodeStage(BaseStage):
             video_only_out=out_path,
             encoder_args=build_args,
             allow_overwrite=True,
-            progress=False,
+            progress=progress,
             global_prefix=global_prefix,
         )
 
@@ -420,3 +462,74 @@ def _safe_version(adapter: FFmpegAdapter) -> str:
         return adapter.version
     except Exception:
         return "unknown"
+
+
+def _benchmark_verbose_enabled(ctx: PipelineContext) -> bool:
+    raw = ctx.extras.get("benchmark")
+    return isinstance(raw, dict) and bool(raw.get("verbose_ffmpeg"))
+
+
+def _benchmark_global_prefix(ctx: PipelineContext) -> list[str]:
+    if not _benchmark_verbose_enabled(ctx):
+        return []
+    return ["-loglevel", "verbose"]
+
+
+def _record_benchmark_encode_sample(ctx: PipelineContext, sample: dict[str, Any]) -> None:
+    samples = ctx.extras.setdefault("benchmark_encode_samples", [])
+    if isinstance(samples, list):
+        samples.append(sample)
+
+
+def _build_benchmark_encode_sample(progress_buf: dict[str, str]) -> dict[str, Any]:
+    return {
+        "frame": _to_int_or_none(progress_buf.get("frame")),
+        "fps": _to_float_or_none(progress_buf.get("fps")),
+        "bitrate_kbps": _to_float_or_none(
+            (progress_buf.get("bitrate", "") or "").rstrip("kbits/s").strip(),
+        ),
+        "out_time_us": _to_int_or_none(progress_buf.get("out_time_us")),
+        "speed": _to_float_or_none((progress_buf.get("speed", "") or "").rstrip("x").strip()),
+        "progress": progress_buf.get("progress"),
+    }
+
+
+def _sample_fps(sample: dict[str, Any]) -> float | None:
+    fps = sample.get("fps")
+    return float(fps) if isinstance(fps, (int, float)) else None
+
+
+def _to_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    if value in ("N/A", "", None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _emit_stderr_as_ffmpeg_lines(
+    ctx: PipelineContext,
+    events: EventSink,
+    stderr: str,
+) -> None:
+    if not _benchmark_verbose_enabled(ctx):
+        return
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        events.emit(StageEvent(
+            ctx.job_id,
+            "08_encode",
+            "log",
+            message=line,
+            extra={"ffmpeg_line": line},
+        ))

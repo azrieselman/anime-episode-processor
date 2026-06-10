@@ -9,7 +9,7 @@ Updating a pin is a deliberate three-step process:
   2. Run `python scripts/fetch_tools.py --force` and `verify_tools.py`.
   3. Commit. CI then re-verifies.
 
-The Windows-essentials FFmpeg build (gyan.dev) ships ffmpeg/ffprobe + their DLLs in a
+The pinned Windows FFmpeg release build (gyan.dev) ships ffmpeg/ffprobe + their DLLs in a
 single archive; we extract only the executables and DLLs we actually call. MKVToolNix
 similarly bundles all its CLIs.
 
@@ -45,27 +45,27 @@ class ToolPin:
 
 # ----- FFmpeg / FFprobe -----------------------------------------------------
 #
-# We pin the gyan.dev "essentials" build because:
-#   * it includes NVENC (h264_nvenc, hevc_nvenc, av1_nvenc when driver supports it)
-#   * it includes libx264 / libx265 / libsvtav1 / libaom-av1 (software fallbacks)
+# We pin the gyan.dev "full" release build because:
+#   * it includes NVENC/QSV/AMF plus newer D3D12/Vulkan encoder families on current FFmpeg
+#   * it includes broad software fallback coverage (x264/x265/svtav1/aom and more)
 #   * it ships the matching ffprobe in the same archive, identical version
 #
 # The exact filename incorporates the tag; check
-# https://www.gyan.dev/ffmpeg/builds/ for the current essentials filename.
+# https://www.gyan.dev/ffmpeg/builds/ for the current full-build filename.
 
 FFMPEG_PIN = ToolPin(
     tool_id="ffmpeg",
     subdir="ffmpeg",
-    version="n7.0.2",
+    version="n8.1.1",
     archive_url=(
-        "https://github.com/GyanD/codexffmpeg/releases/download/7.0.2/"
-        "ffmpeg-7.0.2-essentials_build.zip"
+        "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/"
+        "ffmpeg-8.1.1-full_build.zip"
     ),
-    archive_sha256="d5308d30872b2739cf53169df61faba8639d39a19b20b91e611c177ef676f64c",
+    archive_sha256="49b28c5f16addd40239a66949973458769b7056fb7752c30ac0d53389d09a552",
     archive_format="zip",
     files=(
-        ("ffmpeg-7.0.2-essentials_build/bin/ffmpeg.exe", "ffmpeg.exe"),
-        ("ffmpeg-7.0.2-essentials_build/bin/ffprobe.exe", "ffprobe.exe"),
+        ("ffmpeg-8.1.1-full_build/bin/ffmpeg.exe", "ffmpeg.exe"),
+        ("ffmpeg-8.1.1-full_build/bin/ffprobe.exe", "ffprobe.exe"),
     ),
 )
 

@@ -55,6 +55,7 @@ from aep.constants import (
 )
 from aep.gui import theme
 from aep.gui.preset_design import PresetDesignerView
+from aep.gui.views.benchmark_view import BenchmarkView
 from aep.gui.views.job_config_view import JobConfigView
 from aep.gui.views.logs_view import LogsView
 from aep.gui.views.queue_view import QueueView
@@ -158,8 +159,8 @@ class MainWindow(QMainWindow):
         about_act.triggered.connect(self._on_about)
         help_menu.addAction(about_act)
 
-        # Ctrl+1 … Ctrl+7 — switch primary views (sidebar order).
-        for i in range(7):
+        # Ctrl+1 … Ctrl+8 — switch primary views (sidebar order).
+        for i in range(8):
             act = QAction(self)
             act.setShortcut(QKeySequence(f"Ctrl+{i + 1}"))
             act.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
@@ -185,6 +186,7 @@ class MainWindow(QMainWindow):
         self._job_config_view = JobConfigView(self._services, parent=self)
         self._inspector_view = StreamInspectorView(self._services, parent=self)
         self._preset_designer_view = PresetDesignerView(self._services, parent=self)
+        self._benchmark_view = BenchmarkView(self._services, parent=self)
         self._logs_view = LogsView(parent=self)
         self._ramdisk_view = RamDiskView(self._services, parent=self)
         self._settings_view = SettingsView(self._services, parent=self)
@@ -198,6 +200,7 @@ class MainWindow(QMainWindow):
             ("Job Config", self._job_config_view, "job-config", QStyle.StandardPixmap.SP_FileDialogDetailedView),
             ("Stream Inspector", self._inspector_view, "stream-inspector", QStyle.StandardPixmap.SP_FileDialogInfoView),
             ("Preset Designer", self._preset_designer_view, "preset-designer", QStyle.StandardPixmap.SP_FileIcon),
+            ("Benchmark", self._benchmark_view, "benchmark", QStyle.StandardPixmap.SP_ComputerIcon),
             ("Logs", self._logs_view, "logs", QStyle.StandardPixmap.SP_FileDialogContentsView),
             ("RamDisk", self._ramdisk_view, "ramdisk", QStyle.StandardPixmap.SP_DriveHDIcon),
             ("Settings", self._settings_view, "settings", QStyle.StandardPixmap.SP_FileDialogListView),

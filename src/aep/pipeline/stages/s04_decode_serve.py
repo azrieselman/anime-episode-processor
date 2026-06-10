@@ -29,7 +29,7 @@ from pathlib import Path
 
 from aep.adapters.ffmpeg import (
     FFmpegAdapter,
-    decode_hwaccel_has_sw_fallback,
+    decode_hwaccel_fallback_chain,
     decode_hwaccel_uses_hardware_decode,
     raise_if_failed,
 )
@@ -189,6 +189,7 @@ class DecodeServeStage(BaseStage):
         hdr = ctx.plan.get("hdr") or {}
         use_zscale = bool(hdr.get("was_10bit") or hdr.get("was_hdr_transfer"))
         bt709_normalize = bool(plan.params.get("bt709_normalize", True))
+        decode_loglevel = "verbose" if _benchmark_verbose_enabled(ctx) else "error"
 
         fd_plan = ctx.plan.get("frame_dedupe") or {}
         fd_active = bool(fd_plan.get("active"))
@@ -233,6 +234,7 @@ class DecodeServeStage(BaseStage):
                     start_pts=decode_start_pts,
                     end_pts=decode_end_pts,
                     time_pad_s=decode_time_pad,
+                    loglevel=decode_loglevel,
                 )
                 result, used_fallback = self._run_decode_with_hwaccel_fallback(
                     ctx=ctx,
@@ -249,6 +251,7 @@ class DecodeServeStage(BaseStage):
                     start_pts=decode_start_pts,
                     end_pts=decode_end_pts,
                     time_pad_s=decode_time_pad,
+                    loglevel=decode_loglevel,
                 )
             else:
                 fused_cmd = self._ffmpeg.build_decode_to_frames_with_scene_metadata_fused(
@@ -265,6 +268,7 @@ class DecodeServeStage(BaseStage):
                     start_pts=decode_start_pts,
                     end_pts=decode_end_pts,
                     time_pad_s=decode_time_pad,
+                    loglevel=decode_loglevel,
                 )
                 events.emit(StageEvent(
                     ctx.job_id, self.name, "log",
@@ -287,6 +291,7 @@ class DecodeServeStage(BaseStage):
                     start_pts=decode_start_pts,
                     end_pts=decode_end_pts,
                     time_pad_s=decode_time_pad,
+                    loglevel=decode_loglevel,
                 )
                 out_manifest_try = ctx.get_frame_manifest(out_dir, format=frame_format)
                 n_try = int(out_manifest_try["count"])
@@ -340,6 +345,7 @@ class DecodeServeStage(BaseStage):
                         start_pts=decode_start_pts,
                         end_pts=decode_end_pts,
                         time_pad_s=decode_time_pad,
+                        loglevel=decode_loglevel,
                     )
                     result, used_fallback = self._run_decode_with_hwaccel_fallback(
                         ctx=ctx,
@@ -356,6 +362,7 @@ class DecodeServeStage(BaseStage):
                         start_pts=decode_start_pts,
                         end_pts=decode_end_pts,
                         time_pad_s=decode_time_pad,
+                        loglevel=decode_loglevel,
                     )
         else:
             cmd = self._ffmpeg.build_decode_to_frames(
@@ -371,6 +378,7 @@ class DecodeServeStage(BaseStage):
                 start_pts=decode_start_pts,
                 end_pts=decode_end_pts,
                 time_pad_s=decode_time_pad,
+                loglevel=decode_loglevel,
             )
             result, used_fallback = self._run_decode_with_hwaccel_fallback(
                 ctx=ctx,
@@ -387,6 +395,7 @@ class DecodeServeStage(BaseStage):
                 start_pts=decode_start_pts,
                 end_pts=decode_end_pts,
                 time_pad_s=decode_time_pad,
+                loglevel=decode_loglevel,
             )
         if result.returncode != 0:
             log.error(
@@ -450,6 +459,7 @@ class DecodeServeStage(BaseStage):
             out_dir=out_dir,
             frame_format=frame_format,
             decode_hwaccel=decode_hwaccel,
+            use_zscale=use_zscale,
             start_pts=decode_start_pts,
             end_pts=decode_end_pts,
             full_count=n,
@@ -490,6 +500,7 @@ class DecodeServeStage(BaseStage):
         out_dir: Path,
         frame_format: str,
         decode_hwaccel: str,
+        use_zscale: bool,
         start_pts: float | None,
         end_pts: float | None,
         full_count: int,
@@ -530,33 +541,39 @@ class DecodeServeStage(BaseStage):
                 source=ctx.source_path,
                 metadata_out=scan_meta,
                 decode_hwaccel=decode_hwaccel,
+                use_zscale=use_zscale,
                 start_pts=start_pts,
                 end_pts=end_pts,
             )
             scan_res = run_capture(scan_cmd, cwd=scan_cwd, timeout=24 * 3600.0, check=False)
             used_fallback = False
-            if scan_res.returncode != 0 and decode_hwaccel_has_sw_fallback(decode_hwaccel):
-                events.emit(StageEvent(
-                    ctx.job_id, self.name, "warning",
-                    message=(
-                        f"frame dedupe: hardware decode ({decode_hwaccel}) scan failed; "
-                        "retrying with software decode"
-                    ),
-                ))
-                try:
-                    if scan_meta.exists():
-                        scan_meta.unlink()
-                except OSError:
-                    pass
-                scan_cmd = self._ffmpeg.build_scene_score_scan(
-                    source=ctx.source_path,
-                    metadata_out=scan_meta,
-                    decode_hwaccel="off",
-                    start_pts=start_pts,
-                    end_pts=end_pts,
-                )
-                scan_res = run_capture(scan_cmd, cwd=scan_cwd, timeout=24 * 3600.0, check=False)
+            fallback_modes = decode_hwaccel_fallback_chain(decode_hwaccel)
+            if scan_res.returncode != 0 and fallback_modes:
                 used_fallback = True
+                for fb_mode in fallback_modes:
+                    events.emit(StageEvent(
+                        ctx.job_id, self.name, "warning",
+                        message=(
+                            f"frame dedupe: hardware decode ({decode_hwaccel}) scan failed; "
+                            f"retrying with {fb_mode} decode"
+                        ),
+                    ))
+                    try:
+                        if scan_meta.exists():
+                            scan_meta.unlink()
+                    except OSError:
+                        pass
+                    scan_cmd = self._ffmpeg.build_scene_score_scan(
+                        source=ctx.source_path,
+                        metadata_out=scan_meta,
+                        decode_hwaccel=fb_mode,
+                        use_zscale=use_zscale,
+                        start_pts=start_pts,
+                        end_pts=end_pts,
+                    )
+                    scan_res = run_capture(scan_cmd, cwd=scan_cwd, timeout=24 * 3600.0, check=False)
+                    if scan_res.returncode == 0:
+                        break
             scores = load_scene_score_scan_results(
                 meta_path=scan_meta,
                 stderr=scan_res.stderr or "",
@@ -712,8 +729,9 @@ class DecodeServeStage(BaseStage):
         start_pts: float | None,
         end_pts: float | None,
         time_pad_s: float = 0.0,
+        loglevel: str = "error",
     ) -> tuple[ProcResult, bool]:
-        """Run fused decode+metadata; on D3D11VA/CUDA hwaccel failure retry fusion with software decode.
+        """Run fused decode+metadata; on hwaccel failure retry using fallback decode modes.
 
         Uses ``run_capture`` (not streaming) so ``cwd`` can place the metadata sidecar
         next to ``out_dir`` without a second full decode when fusion succeeds.
@@ -724,44 +742,50 @@ class DecodeServeStage(BaseStage):
             timeout=24 * 3600.0,
             check=False,
         )
-        if result.returncode == 0 or not decode_hwaccel_has_sw_fallback(decode_hwaccel):
+        fallback_modes = decode_hwaccel_fallback_chain(decode_hwaccel)
+        if result.returncode == 0 or not fallback_modes:
             return result, False
 
-        events.emit(StageEvent(
-            ctx.job_id,
-            self.name,
-            "warning",
-            message=(
-                f"decode_serve: hardware decode ({decode_hwaccel}) fused decode failed; "
-                "retrying fusion with software decode"
-            ),
-        ))
-        try:
-            shutil.rmtree(out_dir)
-        except OSError:
-            pass
-        out_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            if scan_meta.exists():
-                scan_meta.unlink()
-        except OSError:
-            pass
-        fb_cmd = self._ffmpeg.build_decode_to_frames_with_scene_metadata_fused(
-            source=ctx.source_path,
-            out_dir=out_dir,
-            metadata_out=scan_meta,
-            frame_format=frame_format,
-            png_intermediate_codec=png_intermediate_codec,
-            target_width=tgt_w if isinstance(tgt_w, int) else None,
-            target_height=tgt_h if isinstance(tgt_h, int) else None,
-            bt709_normalize=bt709_normalize,
-            use_zscale=use_zscale,
-            decode_hwaccel="off",
-            start_pts=start_pts,
-            end_pts=end_pts,
-            time_pad_s=time_pad_s,
-        )
-        result2 = run_capture(fb_cmd, cwd=scan_cwd, timeout=24 * 3600.0, check=False)
+        result2 = result
+        for fb_mode in fallback_modes:
+            events.emit(StageEvent(
+                ctx.job_id,
+                self.name,
+                "warning",
+                message=(
+                    f"decode_serve: hardware decode ({decode_hwaccel}) fused decode failed; "
+                    f"retrying fusion with {fb_mode} decode"
+                ),
+            ))
+            try:
+                shutil.rmtree(out_dir)
+            except OSError:
+                pass
+            out_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                if scan_meta.exists():
+                    scan_meta.unlink()
+            except OSError:
+                pass
+            fb_cmd = self._ffmpeg.build_decode_to_frames_with_scene_metadata_fused(
+                source=ctx.source_path,
+                out_dir=out_dir,
+                metadata_out=scan_meta,
+                frame_format=frame_format,
+                png_intermediate_codec=png_intermediate_codec,
+                target_width=tgt_w if isinstance(tgt_w, int) else None,
+                target_height=tgt_h if isinstance(tgt_h, int) else None,
+                bt709_normalize=bt709_normalize,
+                use_zscale=use_zscale,
+                decode_hwaccel=fb_mode,
+                start_pts=start_pts,
+                end_pts=end_pts,
+                time_pad_s=time_pad_s,
+                loglevel=loglevel,
+            )
+            result2 = run_capture(fb_cmd, cwd=scan_cwd, timeout=24 * 3600.0, check=False)
+            if result2.returncode == 0:
+                break
         return result2, True
 
     def _run_decode_with_hwaccel_fallback(
@@ -781,8 +805,9 @@ class DecodeServeStage(BaseStage):
         start_pts: float | None,
         end_pts: float | None,
         time_pad_s: float = 0.0,
+        loglevel: str = "error",
     ) -> tuple[ProcResult, bool]:
-        """Run the primary decode command; on D3D11VA/CUDA failure, retry without hwaccel.
+        """Run the primary decode command; on hwaccel failure, retry using fallback modes.
 
         Returns ``(result, used_fallback)``. ProcInterrupted is propagated so
         cancel/pause keeps working; modes without hwaccel fallback bubble up unchanged.
@@ -791,18 +816,28 @@ class DecodeServeStage(BaseStage):
             result = _run_capture_via_streaming(primary_cmd, ctx)
             return result, False
         except ProcError as exc:
-            if not decode_hwaccel_has_sw_fallback(decode_hwaccel):
+            fallback_modes = decode_hwaccel_fallback_chain(decode_hwaccel)
+            if not fallback_modes:
                 raise StageError(
                     "decode_serve: ffmpeg invocation failed",
                     context={"stderr": exc.result.stderr[:2000]},
                 ) from exc
+            result = exc.result
+        except ProcInterrupted as exc:
+            if exc.reason == "cancel":
+                raise CancelledError("cancelled during decode") from exc
+            ctx.extras["pause_checkpoint"] = {"stage": self.name, "status": "interrupted"}
+            raise PausedError("paused during decode") from exc
+
+        fallback_modes = decode_hwaccel_fallback_chain(decode_hwaccel)
+        for fb_mode in fallback_modes:
             events.emit(StageEvent(
                 ctx.job_id,
                 self.name,
                 "warning",
                 message=(
                     f"decode_serve: hardware decode ({decode_hwaccel}) failed; "
-                    "retrying with software decode"
+                    f"retrying with {fb_mode} decode"
                 ),
             ))
             # Drop any partial frames from the failed hw attempt so we never mix two
@@ -812,27 +847,25 @@ class DecodeServeStage(BaseStage):
             except OSError:
                 pass
             out_dir.mkdir(parents=True, exist_ok=True)
-        except ProcInterrupted as exc:
-            if exc.reason == "cancel":
-                raise CancelledError("cancelled during decode") from exc
-            ctx.extras["pause_checkpoint"] = {"stage": self.name, "status": "interrupted"}
-            raise PausedError("paused during decode") from exc
 
-        fallback_cmd = self._ffmpeg.build_decode_to_frames(
-            source=ctx.source_path,
-            out_dir=out_dir,
-            frame_format=frame_format,
-            png_intermediate_codec=png_intermediate_codec,
-            target_width=tgt_w if isinstance(tgt_w, int) else None,
-            target_height=tgt_h if isinstance(tgt_h, int) else None,
-            bt709_normalize=bt709_normalize,
-            use_zscale=use_zscale,
-            decode_hwaccel="off",
-            start_pts=start_pts,
-            end_pts=end_pts,
-            time_pad_s=time_pad_s,
-        )
-        result = run_capture(fallback_cmd, timeout=24 * 3600.0, check=False)
+            fallback_cmd = self._ffmpeg.build_decode_to_frames(
+                source=ctx.source_path,
+                out_dir=out_dir,
+                frame_format=frame_format,
+                png_intermediate_codec=png_intermediate_codec,
+                target_width=tgt_w if isinstance(tgt_w, int) else None,
+                target_height=tgt_h if isinstance(tgt_h, int) else None,
+                bt709_normalize=bt709_normalize,
+                use_zscale=use_zscale,
+                decode_hwaccel=fb_mode,
+                start_pts=start_pts,
+                end_pts=end_pts,
+                time_pad_s=time_pad_s,
+                loglevel=loglevel,
+            )
+            result = run_capture(fallback_cmd, timeout=24 * 3600.0, check=False)
+            if result.returncode == 0:
+                break
         return result, True
 
 
@@ -859,3 +892,8 @@ def _safe_version(adapter: FFmpegAdapter) -> str:
         return adapter.version
     except Exception:
         return "unknown"
+
+
+def _benchmark_verbose_enabled(ctx: PipelineContext) -> bool:
+    raw = ctx.extras.get("benchmark")
+    return isinstance(raw, dict) and bool(raw.get("verbose_ffmpeg"))

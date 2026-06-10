@@ -445,6 +445,34 @@ def test_job_active_elapsed_returns_none_before_job_start() -> None:
     assert broker.get_job_active_elapsed_s(job.id) is None
 
 
+def test_job_active_elapsed_excludes_failed_idle_after_retry() -> None:
+    job = Job(
+        source_path="/data/failed.mkv",
+        output_path=None,
+        preset_id="anime_balanced",
+        state=JobState.FAILED,
+        started_at=_iso(1000.0),
+        finished_at=_iso(1010.0),
+    )
+    insert_job(job)
+    update_job(job)
+
+    broker = JobBroker()
+    assert broker.get_job_active_elapsed_s(job.id) == pytest.approx(10.0)
+
+    with patch("aep.jobs.broker._now", return_value=_iso(1110.0)):
+        broker.retry_failed(job.id)
+
+    loaded = get_job(job.id)
+    assert loaded is not None
+    assert loaded.state == JobState.QUEUED
+    assert loaded.finished_at is None
+    assert loaded.plan["__runtime"]["paused_accum_s"] == pytest.approx(100.0)
+
+    with patch("aep.jobs.broker.time.time", return_value=1110.0):
+        assert broker.get_job_active_elapsed_s(job.id) == pytest.approx(10.0)
+
+
 def test_pause_sets_pause_event_without_premature_db_paused_row(tmp_path: Path) -> None:
     """pause(job_id) cooperates with the worker; DB stays RUNNING until PausedError."""
     job = Job(source_path=str(tmp_path / "a.mkv"))

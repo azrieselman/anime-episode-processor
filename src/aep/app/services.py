@@ -7,11 +7,15 @@ from in-process broker to a worker-process broker with IPC.
 
 from __future__ import annotations
 
+import json
 import logging
+import threading
 from collections.abc import Collection
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from aep.bench.models import BenchmarkRequest, BenchmarkResult
+from aep.bench.runner import BenchmarkRunner, delete_benchmark_run
 from aep.jobs.broker import JobBroker
 from aep.jobs.cleanup import cleanup_job_artifacts
 from aep.jobs.models import Job, JobState
@@ -29,6 +33,7 @@ from aep.persist.presets import (
     save_user_preset,
 )
 from aep.persist.settings import AppSettings, load_settings, save_settings
+from aep.pipeline.events import StageEvent
 
 log = logging.getLogger(__name__)
 
@@ -188,6 +193,39 @@ class JobService:
         self._broker.subscribe(cb)
 
 
+class BenchmarkService:
+    def __init__(self) -> None:
+        self._runner = BenchmarkRunner()
+
+    def run(
+        self,
+        request: BenchmarkRequest,
+        *,
+        cancel_event: threading.Event | None = None,
+        on_event: Callable[[StageEvent], None] | None = None,
+    ) -> BenchmarkResult:
+        return self._runner.run(
+            request,
+            cancel_event=cancel_event,
+            on_event=on_event,
+        )
+
+    def export_result(self, result: BenchmarkResult, path: Path) -> None:
+        path.write_text(
+            json.dumps(result.to_dict(), indent=2),
+            encoding="utf-8",
+        )
+
+    def delete_run_data(self, result: BenchmarkResult) -> None:
+        delete_benchmark_run(result)
+
+    @staticmethod
+    def probe_vmaf_available() -> bool:
+        from aep.bench.vmaf import is_libvmaf_available
+
+        return is_libvmaf_available()
+
+
 class AppServices:
     """Aggregate. Lives for the lifetime of the GUI."""
 
@@ -197,6 +235,7 @@ class AppServices:
         self.media = MediaService()
         self.broker = JobBroker()
         self.jobs = JobService(self.broker)
+        self.benchmark = BenchmarkService()
 
     def start(self) -> None:
         self.broker.start()

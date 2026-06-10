@@ -45,7 +45,9 @@ log = logging.getLogger(__name__)
 _DECODE_HWACCEL_CHOICES: list[tuple[str, str]] = [
     ("Auto", "auto"),
     ("Off (software decode)", "off"),
+    ("DirectX D3D12VA", "d3d12va"),
     ("DirectX D3D11VA", "d3d11va"),
+    ("Vulkan Video", "vulkan"),
     ("NVIDIA NVDEC (CUDA)", "cuda"),
     ("AMD AMF", "amf"),
 ]
@@ -111,6 +113,8 @@ class JobConfigView(QWidget):
         self._encoder_backend_combo.addItem("NVIDIA (NVENC)", "nvenc")
         self._encoder_backend_combo.addItem("Intel (QSV)", "qsv")
         self._encoder_backend_combo.addItem("AMD (AMF)", "amf")
+        self._encoder_backend_combo.addItem("DirectX D3D12", "d3d12")
+        self._encoder_backend_combo.addItem("Vulkan", "vulkan")
         self._encoder_backend_combo.addItem("CPU (libx264/libx265)", "software")
         self._encoder_codec_combo = QComboBox()
         self._encoder_backend_combo.currentIndexChanged.connect(
@@ -177,8 +181,10 @@ class JobConfigView(QWidget):
     def _refresh_encoder_codec_choices(self, *, preferred: str | None) -> None:
         backend = str(self._encoder_backend_combo.currentData() or "software")
         choices = [("H.264", "h264"), ("HEVC", "hevc")]
-        if backend in {"nvenc", "qsv", "amf"}:
+        if backend in {"nvenc", "qsv", "amf", "vulkan"}:
             choices.append(("AV1", "av1"))
+        if backend == "d3d12":
+            choices = [("H.264", "h264"), ("AV1", "av1")]
         self._encoder_codec_combo.blockSignals(True)
         self._encoder_codec_combo.clear()
         for label, value in choices:
@@ -194,9 +200,9 @@ class JobConfigView(QWidget):
         except ValueError:
             fam = "x265"
 
-        backend = fam if fam in {"nvenc", "qsv", "amf"} else "software"
+        backend = fam if fam in {"nvenc", "qsv", "amf", "d3d12", "vulkan"} else "software"
         codec = "hevc"
-        if fam in {"nvenc", "qsv", "amf"}:
+        if fam in {"nvenc", "qsv", "amf", "d3d12", "vulkan"}:
             codec = name.split("_", 1)[0]
         elif fam == "x264":
             codec = "h264"
@@ -209,7 +215,10 @@ class JobConfigView(QWidget):
         codec = str(self._encoder_codec_combo.currentData() or "hevc")
         if backend == "software":
             return software_name_for("h264" if codec == "h264" else "hevc")
-        return encode_name_for(backend, codec)  # type: ignore[arg-type]
+        try:
+            return encode_name_for(backend, codec)  # type: ignore[arg-type]
+        except ValueError:
+            return "h264_d3d12" if backend == "d3d12" else "libx264"
 
     def _seed_widgets(self, base: dict[str, Any], overrides: dict[str, Any] | None) -> None:
         """Populate widgets from the base preset, then layer overrides on top."""

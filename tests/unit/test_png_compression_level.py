@@ -195,10 +195,26 @@ def test_decode_hwaccel_amf_on_decode_to_frames(tmp_path: Path) -> None:
         out_dir=tmp_path / "out",
         frame_format="png",
         decode_hwaccel="amf",
+        use_zscale=False,
     )]
     assert "-hwaccel" in cmd
     idx = cmd.index("-hwaccel")
     assert cmd[idx + 1] == "amf"
+    vf_idx = cmd.index("-vf")
+    assert "hwdownload,format=nv12" in cmd[vf_idx + 1]
+
+
+def test_decode_hwaccel_amf_10bit_uses_p010_hwdownload(tmp_path: Path) -> None:
+    ff = FFmpegAdapter()
+    cmd = [str(c) for c in ff.build_decode_to_frames(
+        source=tmp_path / "in.mkv",
+        out_dir=tmp_path / "out",
+        frame_format="png",
+        decode_hwaccel="amf",
+        use_zscale=True,
+    )]
+    vf_idx = cmd.index("-vf")
+    assert "hwdownload,format=p010le" in cmd[vf_idx + 1]
 
 
 def test_decode_hwaccel_flags_on_passthrough_encode(tmp_path: Path) -> None:

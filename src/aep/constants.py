@@ -55,8 +55,8 @@ BIN_VSPIPE = "vspipe.exe"
 # loud error, not a warning, because behavior differences between FFmpeg builds (esp. NVENC
 # parameter availability) are real and silent breakage is unacceptable.
 PINNED_VERSIONS = {
-    "ffmpeg": "n7.0.2",          # gyan.dev essentials build line
-    "ffprobe": "n7.0.2",
+    "ffmpeg": "n8.1.1",          # gyan.dev full build line
+    "ffprobe": "n8.1.1",
     "mkvmerge": "85.0",
     "mkvpropedit": "85.0",
     "realcugan-ncnn-vulkan": "20220728",

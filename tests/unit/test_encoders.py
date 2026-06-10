@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from aep.encode.encoders import QSV_GLOBAL_PREFIX, build_encoder_args
+from aep.encode.encoders import QSV_GLOBAL_PREFIX, VULKAN_GLOBAL_PREFIX, build_encoder_args
 from aep.persist.presets import EncoderCfg
 
 
@@ -17,6 +17,11 @@ from aep.persist.presets import EncoderCfg
         ("hevc_amf", "hevc_amf"),
         ("h264_amf", "h264_amf"),
         ("av1_amf", "av1_amf"),
+        ("h264_d3d12", "h264_d3d12"),
+        ("av1_d3d12", "av1_d3d12"),
+        ("h264_vulkan", "h264_vulkan"),
+        ("hevc_vulkan", "hevc_vulkan"),
+        ("av1_vulkan", "av1_vulkan"),
     ],
 )
 def test_hw_encoder_argv_contains_codec(name: str, expect_codec: str) -> None:
@@ -53,6 +58,22 @@ def test_amf_has_no_global_prefix() -> None:
     cfg = EncoderCfg(name="hevc_amf")  # type: ignore[arg-type]
     r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
     assert r.global_prefix == ()
+
+
+def test_d3d12_has_no_global_prefix() -> None:
+    cfg = EncoderCfg(name="h264_d3d12")  # type: ignore[arg-type]
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    assert r.global_prefix == ()
+    assert "-c:v" in r.args and "h264_d3d12" in r.args
+
+
+def test_vulkan_sets_global_prefix_and_hwupload() -> None:
+    cfg = EncoderCfg(name="hevc_vulkan")  # type: ignore[arg-type]
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    assert r.global_prefix == VULKAN_GLOBAL_PREFIX
+    joined = " ".join(r.args)
+    assert "format=nv12,hwupload" in joined
+    assert "-c:v hevc_vulkan" in joined
 
 
 def test_amf_emits_quality_and_hevc_skips_qp_b() -> None:

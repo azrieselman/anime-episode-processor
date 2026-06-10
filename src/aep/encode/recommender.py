@@ -51,16 +51,71 @@ _HW_TO_SOFTWARE: dict[str, str] = {
     "h264_amf": "libx264",
     "hevc_amf": "libx265",
     "av1_amf": "libx265",
+    "h264_d3d12": "libx264",
+    "av1_d3d12": "libx265",
+    "h264_vulkan": "libx264",
+    "hevc_vulkan": "libx265",
+    "av1_vulkan": "libx265",
 }
 
 _SOFTWARE_TO_HW_PREFERENCE: list[tuple[str, str]] = [
     ("libx264", "h264_nvenc"),
     ("libx264", "h264_qsv"),
     ("libx264", "h264_amf"),
+    ("libx264", "h264_d3d12"),
+    ("libx264", "h264_vulkan"),
     ("libx265", "hevc_nvenc"),
     ("libx265", "hevc_qsv"),
     ("libx265", "hevc_amf"),
+    ("libx265", "hevc_vulkan"),
+    ("libx265", "av1_vulkan"),
+    ("libx265", "av1_d3d12"),
 ]
+
+
+def _encoder_capable(name: str, hardware: HardwareProfile) -> bool:
+    if not hardware.has_encoder(name):
+        return False
+    return bool(
+        (name == "h264_d3d12" and hardware.gpu.d3d12_h264)
+        or (name == "av1_d3d12" and hardware.gpu.d3d12_av1)
+        or (name == "h264_vulkan" and hardware.gpu.vulkan_h264)
+        or (name == "hevc_vulkan" and hardware.gpu.vulkan_hevc)
+        or (name == "av1_vulkan" and hardware.gpu.vulkan_av1)
+    )
+
+
+def _universal_hw_candidates(name: str) -> list[str]:
+    codec = name.split("_", 1)[0]
+    if codec == "h264":
+        return ["h264_d3d12", "h264_vulkan"]
+    if codec == "av1":
+        return ["av1_d3d12", "av1_vulkan"]
+    if codec == "hevc":
+        return ["hevc_vulkan"]
+    return []
+
+
+def _maybe_fallback_to_universal_hw(
+    cfg: EncoderCfg,
+    hardware: HardwareProfile,
+    *,
+    prefer_hardware_encoder: bool,
+) -> tuple[EncoderCfg | None, list[str], list[str]]:
+    warnings: list[str] = []
+    rationale: list[str] = []
+    for alt in _universal_hw_candidates(cfg.name):
+        if not _encoder_capable(alt, hardware):
+            continue
+        warnings.append(f"Falling back to {alt}.")
+        cfg2 = cfg.model_copy(update={"name": alt})  # type: ignore[arg-type]
+        cfg3, w2, r2 = _enforce_hardware_availability(
+            cfg2,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
+        return cfg3, warnings + w2, rationale + r2
+    return None, warnings, rationale
 
 
 def recommend(
@@ -101,7 +156,7 @@ def recommend(
         warnings.extend(fb2)
 
     if source_pix_fmt and "10" in source_pix_fmt and cfg.name in {
-        "h264_nvenc", "h264_qsv", "h264_amf",
+        "h264_nvenc", "h264_qsv", "h264_amf", "h264_d3d12", "h264_vulkan",
     }:
         warnings.append(
             "Source is 10-bit but H.264 output will downconvert to 8-bit for compatibility. "
@@ -109,7 +164,7 @@ def recommend(
         )
 
     if source_codec and source_codec.lower() in {"hevc", "h265"} and cfg.name in {
-        "h264_nvenc", "h264_qsv", "h264_amf", "libx264",
+        "h264_nvenc", "h264_qsv", "h264_amf", "h264_d3d12", "h264_vulkan", "libx264",
     }:
         warnings.append(
             "Source is HEVC but you selected H.264 output; this typically increases "
@@ -144,10 +199,16 @@ def _nvenc_chain(
     name = cfg.name
 
     if not hardware.gpu.has_nvidia:
-        sw = _HW_TO_SOFTWARE.get(name, "libx264")
-        warnings.append(
-            f"{name} requires an NVIDIA GPU; none detected. Falling back to {sw}."
+        warnings.append(f"{name} requires an NVIDIA GPU; none detected.")
+        cfg2, w2, r2 = _maybe_fallback_to_universal_hw(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
         )
+        if cfg2 is not None:
+            return cfg2, warnings + w2, rationale + r2
+        sw = _HW_TO_SOFTWARE.get(name, "libx264")
+        warnings.append(f"Falling back to {sw}.")
         cfg = cfg.model_copy(update={"name": sw})  # type: ignore[arg-type]
         return cfg, warnings, rationale
 
@@ -175,8 +236,16 @@ def _nvenc_chain(
         return cfg2, warnings + w2, rationale + r2
 
     if name == "h264_nvenc" and not hardware.gpu.nvenc_h264:
-        warnings.append("h264_nvenc unavailable; falling back to libx264.")
+        warnings.append("h264_nvenc unavailable.")
+        cfg2, w2, r2 = _maybe_fallback_to_universal_hw(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
+        if cfg2 is not None:
+            return cfg2, warnings + w2, rationale + r2
         cfg = cfg.model_copy(update={"name": "libx264"})  # type: ignore[arg-type]
+        warnings.append("Falling back to libx264.")
         return cfg, warnings, rationale
 
     rationale.append(
@@ -224,6 +293,14 @@ def _qsv_chain(
         )
         return cfg2, warnings + w2, rationale + r2
 
+    cfg2, w2, r2 = _maybe_fallback_to_universal_hw(
+        cfg,
+        hardware,
+        prefer_hardware_encoder=prefer_hardware_encoder,
+    )
+    if cfg2 is not None:
+        return cfg2, warnings + w2, rationale + r2
+
     sw = _HW_TO_SOFTWARE[name]
     warnings.append(f"Falling back to {sw}.")
     cfg = cfg.model_copy(update={"name": sw})  # type: ignore[arg-type]
@@ -268,6 +345,123 @@ def _amf_chain(
         )
         return cfg2, warnings + w2, rationale + r2
 
+    cfg2, w2, r2 = _maybe_fallback_to_universal_hw(
+        cfg,
+        hardware,
+        prefer_hardware_encoder=prefer_hardware_encoder,
+    )
+    if cfg2 is not None:
+        return cfg2, warnings + w2, rationale + r2
+
+    sw = _HW_TO_SOFTWARE[name]
+    warnings.append(f"Falling back to {sw}.")
+    cfg = cfg.model_copy(update={"name": sw})  # type: ignore[arg-type]
+    return cfg, warnings, rationale
+
+
+def _d3d12_chain(
+    cfg: EncoderCfg,
+    hardware: HardwareProfile,
+    *,
+    prefer_hardware_encoder: bool,
+) -> tuple[EncoderCfg, list[str], list[str]]:
+    warnings: list[str] = []
+    rationale: list[str] = []
+    name = cfg.name
+    caps = {
+        "h264_d3d12": hardware.gpu.d3d12_h264,
+        "av1_d3d12": hardware.gpu.d3d12_av1,
+    }
+    if caps.get(name, False):
+        rationale.append(f"{name} confirmed available (DirectX D3D12 path).")
+        return cfg, warnings, rationale
+
+    warnings.append(f"{name} is not available in this ffmpeg/driver D3D12 path.")
+    if name == "av1_d3d12" and hardware.gpu.d3d12_h264 and hardware.has_encoder("h264_d3d12"):
+        warnings.append("Falling back to h264_d3d12.")
+        cfg = cfg.model_copy(update={"name": "h264_d3d12"})  # type: ignore[arg-type]
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
+        return cfg2, warnings + w2, rationale + r2
+
+    if name == "av1_d3d12" and _encoder_capable("av1_vulkan", hardware):
+        warnings.append("Falling back to av1_vulkan.")
+        cfg = cfg.model_copy(update={"name": "av1_vulkan"})  # type: ignore[arg-type]
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
+        return cfg2, warnings + w2, rationale + r2
+    if name == "h264_d3d12" and _encoder_capable("h264_vulkan", hardware):
+        warnings.append("Falling back to h264_vulkan.")
+        cfg = cfg.model_copy(update={"name": "h264_vulkan"})  # type: ignore[arg-type]
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
+        return cfg2, warnings + w2, rationale + r2
+
+    sw = _HW_TO_SOFTWARE[name]
+    warnings.append(f"Falling back to {sw}.")
+    cfg = cfg.model_copy(update={"name": sw})  # type: ignore[arg-type]
+    return cfg, warnings, rationale
+
+
+def _vulkan_chain(
+    cfg: EncoderCfg,
+    hardware: HardwareProfile,
+    *,
+    prefer_hardware_encoder: bool,
+) -> tuple[EncoderCfg, list[str], list[str]]:
+    warnings: list[str] = []
+    rationale: list[str] = []
+    name = cfg.name
+    caps = {
+        "h264_vulkan": hardware.gpu.vulkan_h264,
+        "hevc_vulkan": hardware.gpu.vulkan_hevc,
+        "av1_vulkan": hardware.gpu.vulkan_av1,
+    }
+    if caps.get(name, False):
+        rationale.append(f"{name} confirmed available (Vulkan path).")
+        return cfg, warnings, rationale
+
+    warnings.append(f"{name} is not available in this ffmpeg/driver Vulkan path.")
+    if name == "av1_vulkan" and hardware.gpu.vulkan_hevc and hardware.has_encoder("hevc_vulkan"):
+        warnings.append("Falling back to hevc_vulkan.")
+        cfg = cfg.model_copy(update={"name": "hevc_vulkan"})  # type: ignore[arg-type]
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
+        return cfg2, warnings + w2, rationale + r2
+    if name in {"av1_vulkan", "hevc_vulkan"} and hardware.gpu.vulkan_h264 and hardware.has_encoder("h264_vulkan"):
+        warnings.append("Falling back to h264_vulkan.")
+        cfg = cfg.model_copy(update={"name": "h264_vulkan"})  # type: ignore[arg-type]
+        cfg2, w2, r2 = _enforce_hardware_availability(
+            cfg,
+            hardware,
+            prefer_hardware_encoder=prefer_hardware_encoder,
+        )
+        return cfg2, warnings + w2, rationale + r2
+
+    if name in {"h264_vulkan", "av1_vulkan"}:
+        d3d12_alt = f"{name.split('_', 1)[0]}_d3d12"
+        if _encoder_capable(d3d12_alt, hardware):
+            warnings.append(f"Falling back to {d3d12_alt}.")
+            cfg = cfg.model_copy(update={"name": d3d12_alt})  # type: ignore[arg-type]
+            cfg2, w2, r2 = _enforce_hardware_availability(
+                cfg,
+                hardware,
+                prefer_hardware_encoder=prefer_hardware_encoder,
+            )
+            return cfg2, warnings + w2, rationale + r2
+
     sw = _HW_TO_SOFTWARE[name]
     warnings.append(f"Falling back to {sw}.")
     cfg = cfg.model_copy(update={"name": sw})  # type: ignore[arg-type]
@@ -292,6 +486,12 @@ def _enforce_hardware_availability(
 
     if name in {"h264_amf", "hevc_amf", "av1_amf"}:
         return _amf_chain(cfg, hardware, prefer_hardware_encoder=prefer_hardware_encoder)
+
+    if name in {"h264_d3d12", "av1_d3d12"}:
+        return _d3d12_chain(cfg, hardware, prefer_hardware_encoder=prefer_hardware_encoder)
+
+    if name in {"h264_vulkan", "hevc_vulkan", "av1_vulkan"}:
+        return _vulkan_chain(cfg, hardware, prefer_hardware_encoder=prefer_hardware_encoder)
 
     if name in {"libx264", "libx265"} and not hardware.has_encoder(name):
         warnings.append(f"{name} not present in this ffmpeg build.")
@@ -319,6 +519,17 @@ def _enforce_hardware_availability(
                     (hw_name == "h264_amf" and hardware.gpu.amf_h264) or
                     (hw_name == "hevc_amf" and hardware.gpu.amf_hevc)
                 )
+            elif hw_name.endswith("_d3d12"):
+                ok = bool(
+                    (hw_name == "h264_d3d12" and hardware.gpu.d3d12_h264) or
+                    (hw_name == "av1_d3d12" and hardware.gpu.d3d12_av1)
+                )
+            elif hw_name.endswith("_vulkan"):
+                ok = bool(
+                    (hw_name == "h264_vulkan" and hardware.gpu.vulkan_h264) or
+                    (hw_name == "hevc_vulkan" and hardware.gpu.vulkan_hevc) or
+                    (hw_name == "av1_vulkan" and hardware.gpu.vulkan_av1)
+                )
             if ok:
                 warnings.append(f"Falling back to {hw_name}.")
                 cfg = cfg.model_copy(update={"name": hw_name})  # type: ignore[arg-type]
@@ -341,7 +552,9 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
     is_nvenc = name.endswith("_nvenc")
     is_qsv = name.endswith("_qsv")
     is_amf = name.endswith("_amf")
-    is_hw = is_nvenc or is_qsv or is_amf
+    is_d3d12 = name.endswith("_d3d12")
+    is_vulkan = name.endswith("_vulkan")
+    is_hw = is_nvenc or is_qsv or is_amf or is_d3d12 or is_vulkan
 
     if goal == "quality":
         if is_nvenc:
@@ -371,6 +584,19 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
                 "amf_vbaq": False,
             })
             rationale.append("Goal=quality: AMF quality=quality, QP tightened.")
+        elif is_d3d12:
+            cfg = cfg.model_copy(update={
+                "d3d12_qp": max(0, min(cfg.d3d12_qp, 20)),
+                "d3d12_quality": max(cfg.d3d12_quality, 0),
+            })
+            rationale.append("Goal=quality: D3D12 QP tightened.")
+        elif is_vulkan:
+            cfg = cfg.model_copy(update={
+                "vulkan_qp": max(0, min(cfg.vulkan_qp, 20)),
+                "vulkan_quality": max(cfg.vulkan_quality, 0),
+                "vulkan_async_depth": max(cfg.vulkan_async_depth, 2),
+            })
+            rationale.append("Goal=quality: Vulkan QP tightened.")
         else:
             cfg = cfg.model_copy(update={"x_preset": "slow", "x_crf": min(cfg.x_crf, 21)})
             rationale.append("Goal=quality: software encoder set to slow preset, CRF ≤ 21.")
@@ -396,6 +622,17 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
                 "amf_vbaq": False,
             })
             rationale.append("Goal=speed: AMF quality=speed.")
+        elif is_d3d12:
+            cfg = cfg.model_copy(update={
+                "d3d12_qp": min(51, max(0, cfg.d3d12_qp) + 4),
+            })
+            rationale.append("Goal=speed: D3D12 QP relaxed.")
+        elif is_vulkan:
+            cfg = cfg.model_copy(update={
+                "vulkan_qp": min(255, max(0, cfg.vulkan_qp) + 4),
+                "vulkan_async_depth": min(64, max(cfg.vulkan_async_depth, 4)),
+            })
+            rationale.append("Goal=speed: Vulkan QP relaxed and async depth increased.")
         else:
             cfg = cfg.model_copy(update={"x_preset": "medium"})
             rationale.append("Goal=speed: software preset relaxed to medium.")
@@ -427,6 +664,19 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
                 "amf_vbaq": False,
             })
             rationale.append("Goal=archival: AMF high_quality / lower QP.")
+        elif is_d3d12:
+            cfg = cfg.model_copy(update={
+                "d3d12_qp": max(0, min(cfg.d3d12_qp, 18)),
+                "d3d12_quality": max(cfg.d3d12_quality, 0),
+            })
+            rationale.append("Goal=archival: D3D12 QP lowered.")
+        elif is_vulkan:
+            cfg = cfg.model_copy(update={
+                "vulkan_qp": max(0, min(cfg.vulkan_qp, 18)),
+                "vulkan_quality": max(cfg.vulkan_quality, 0),
+                "vulkan_async_depth": min(64, max(cfg.vulkan_async_depth, 4)),
+            })
+            rationale.append("Goal=archival: Vulkan QP lowered.")
         else:
             cfg = cfg.model_copy(update={"x_preset": "slower", "x_crf": min(cfg.x_crf, 16)})
             rationale.append("Goal=archival: software encoder set to slower / CRF ≤ 16.")
@@ -434,6 +684,7 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
         hevc_like = {
             "hevc_nvenc", "av1_nvenc", "libx265",
             "hevc_qsv", "av1_qsv", "hevc_amf", "av1_amf",
+            "av1_d3d12", "hevc_vulkan", "av1_vulkan",
         }
         if name in hevc_like:
             if is_nvenc:
@@ -442,6 +693,10 @@ def _apply_goal(cfg: EncoderCfg, goal: Goal) -> tuple[EncoderCfg, list[str]]:
                 target = "h264_qsv"
             elif is_amf:
                 target = "h264_amf"
+            elif is_d3d12:
+                target = "h264_d3d12"
+            elif is_vulkan:
+                target = "h264_vulkan"
             else:
                 target = "libx264"
             rationale.append(

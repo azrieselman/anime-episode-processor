@@ -34,7 +34,7 @@ def _gui(
     *,
     spin_decimals: int | None = None,
     group: str | None = None,
-    when_family: Literal["nvenc", "qsv", "amf", "software", "all"] | None = None,
+    when_family: Literal["nvenc", "qsv", "amf", "d3d12", "vulkan", "software", "all"] | None = None,
     when_rc: Literal["cqp", "vbr", "cbr"] | None = None,
 ) -> dict[str, object]:
     """Metadata consumed by the schema-driven preset editor."""
@@ -73,6 +73,11 @@ EncoderName = Literal[
     "h264_amf",
     "hevc_amf",
     "av1_amf",
+    "h264_d3d12",
+    "av1_d3d12",
+    "h264_vulkan",
+    "hevc_vulkan",
+    "av1_vulkan",
     "libx264",
     "libx265",
 ]
@@ -124,7 +129,7 @@ def coerce_amf_encoder(cfg: "EncoderCfg") -> "EncoderCfg":
         return cfg.model_copy(update={"amf_vbaq": False})
     return cfg
 ContentClass = Literal["anime_2d", "anime_compressed", "mixed", "auto"]
-DecodeHwaccelMode = Literal["auto", "off", "d3d11va", "cuda", "amf"]
+DecodeHwaccelMode = Literal["auto", "off", "d3d12va", "d3d11va", "vulkan", "cuda", "amf"]
 PngIntermediateCodec = Literal["mjpeg", "libpng"]
 BatchingMode = Literal["manual", "auto"]
 
@@ -491,6 +496,51 @@ class EncoderCfg(BaseModel):
         ),
         json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
     )
+    d3d12_qp: int = Field(
+        default=21,
+        ge=-1,
+        le=51,
+        description=(
+            "D3D12 encoder quantizer (-qp). Lower values increase quality and output size; "
+            "-1 lets the encoder choose."
+        ),
+        json_schema_extra=_gui("encoding", "simple", group="quality", when_family="d3d12"),
+    )
+    d3d12_quality: int = Field(
+        default=-1,
+        ge=-1,
+        le=100,
+        description=(
+            "Optional D3D12 encoder quality hint (-quality). -1 leaves the encoder default."
+        ),
+        json_schema_extra=_gui("encoding", "advanced", group="d3d12", when_family="d3d12"),
+    )
+    vulkan_qp: int = Field(
+        default=21,
+        ge=-1,
+        le=255,
+        description=(
+            "Vulkan encoder constant quantizer (-qp). Lower values increase quality; "
+            "-1 leaves automatic rate control."
+        ),
+        json_schema_extra=_gui("encoding", "simple", group="quality", when_family="vulkan"),
+    )
+    vulkan_quality: int = Field(
+        default=-1,
+        ge=-1,
+        le=100,
+        description=(
+            "Optional Vulkan encoder quality hint (-quality). -1 leaves the encoder default."
+        ),
+        json_schema_extra=_gui("encoding", "advanced", group="vulkan", when_family="vulkan"),
+    )
+    vulkan_async_depth: int = Field(
+        default=2,
+        ge=1,
+        le=64,
+        description="Vulkan encoder async queue depth (-async_depth). Higher can improve throughput.",
+        json_schema_extra=_gui("encoding", "advanced", group="vulkan", when_family="vulkan"),
+    )
     x_crf: int = Field(
         default=18,
         ge=0,
@@ -608,8 +658,9 @@ class DecodeCfg(BaseModel):
     hwaccel: DecodeHwaccelMode = Field(
         default="auto",
         description=(
-            "Decoder hardware acceleration: auto (D3D11VA on Windows, off elsewhere), off, "
-            "d3d11va (DXVA/D3D11), cuda (NVIDIA NVDEC via FFmpeg -hwaccel cuda), or amf "
+            "Decoder hardware acceleration: auto (D3D12VA on Windows, off elsewhere), off, "
+            "d3d12va, d3d11va (DXVA/D3D11), vulkan (Vulkan Video), "
+            "cuda (NVIDIA NVDEC via FFmpeg -hwaccel cuda), or amf "
             "(AMD UVD/VCE via FFmpeg -hwaccel amf; requires an AMF-enabled FFmpeg build and "
             "AMD drivers)."
         ),

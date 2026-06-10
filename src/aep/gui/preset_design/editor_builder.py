@@ -104,6 +104,8 @@ def _codec_caps_from_hardware() -> dict[str, set[str]]:
         "nvenc": {"h264", "hevc", "av1"},
         "qsv": {"h264", "hevc", "av1"},
         "amf": {"h264", "hevc", "av1"},
+        "d3d12": {"h264", "av1"},
+        "vulkan": {"h264", "hevc", "av1"},
         "software": {"h264", "hevc"},
     }
     try:
@@ -130,6 +132,19 @@ def _codec_caps_from_hardware() -> dict[str, set[str]]:
             "h264": hw.gpu.amf_h264 and hw.has_encoder("h264_amf"),
             "hevc": hw.gpu.amf_hevc and hw.has_encoder("hevc_amf"),
             "av1": hw.gpu.amf_av1 and hw.has_encoder("av1_amf"),
+        }.items() if ok
+    } or {"h264", "hevc", "av1"}
+    caps["d3d12"] = {
+        c for c, ok in {
+            "h264": hw.gpu.d3d12_h264 and hw.has_encoder("h264_d3d12"),
+            "av1": hw.gpu.d3d12_av1 and hw.has_encoder("av1_d3d12"),
+        }.items() if ok
+    } or {"h264", "av1"}
+    caps["vulkan"] = {
+        c for c, ok in {
+            "h264": hw.gpu.vulkan_h264 and hw.has_encoder("h264_vulkan"),
+            "hevc": hw.gpu.vulkan_hevc and hw.has_encoder("hevc_vulkan"),
+            "av1": hw.gpu.vulkan_av1 and hw.has_encoder("av1_vulkan"),
         }.items() if ok
     } or {"h264", "hevc", "av1"}
     return caps
@@ -166,6 +181,21 @@ def _hardware_hint_text() -> str:
         }.items() if ok]
         if amf:
             labels.append(f"AMD AMF ({', '.join(amf)})")
+    if hw.gpu.d3d12_h264 or hw.gpu.d3d12_av1:
+        d3d12 = [c.upper() for c, ok in {
+            "h264": hw.gpu.d3d12_h264 and hw.has_encoder("h264_d3d12"),
+            "av1": hw.gpu.d3d12_av1 and hw.has_encoder("av1_d3d12"),
+        }.items() if ok]
+        if d3d12:
+            labels.append(f"D3D12 ({', '.join(d3d12)})")
+    if hw.gpu.vulkan_h264 or hw.gpu.vulkan_hevc or hw.gpu.vulkan_av1:
+        vk = [c.upper() for c, ok in {
+            "h264": hw.gpu.vulkan_h264 and hw.has_encoder("h264_vulkan"),
+            "hevc": hw.gpu.vulkan_hevc and hw.has_encoder("hevc_vulkan"),
+            "av1": hw.gpu.vulkan_av1 and hw.has_encoder("av1_vulkan"),
+        }.items() if ok]
+        if vk:
+            labels.append(f"Vulkan ({', '.join(vk)})")
     if not labels:
         return "No hardware encoder capabilities detected from the last probe."
     return "Detected: " + "; ".join(labels)
@@ -182,6 +212,8 @@ class EncoderNamePicker(QWidget):
         self._backend.addItem("NVIDIA (NVENC)", "nvenc")
         self._backend.addItem("Intel (QSV)", "qsv")
         self._backend.addItem("AMD (AMF)", "amf")
+        self._backend.addItem("DirectX D3D12", "d3d12")
+        self._backend.addItem("Vulkan", "vulkan")
         self._backend.addItem("CPU (libx264/libx265)", "software")
         self._codec = QComboBox()
         h.addWidget(self._backend, 1)
@@ -202,6 +234,10 @@ class EncoderNamePicker(QWidget):
             available = [c for c in ("h264", "hevc") if c in available]
             if not available:
                 available = ["h264", "hevc"]
+        elif backend == "d3d12":
+            available = [c for c in ("h264", "av1") if c in available]
+            if not available:
+                available = ["h264", "av1"]
         elif not available:
             available = ["h264", "hevc", "av1"]
 
@@ -239,9 +275,9 @@ class EncoderNamePicker(QWidget):
             fam = encoder_family(name)
         except ValueError:
             fam = "x265"
-        backend = fam if fam in {"nvenc", "qsv", "amf"} else "software"
+        backend = fam if fam in {"nvenc", "qsv", "amf", "d3d12", "vulkan"} else "software"
         codec = "hevc"
-        if fam in {"nvenc", "qsv", "amf"}:
+        if fam in {"nvenc", "qsv", "amf", "d3d12", "vulkan"}:
             codec = name.split("_", 1)[0]
         elif fam == "x264":
             codec = "h264"
@@ -441,6 +477,8 @@ def _build_encoding_tab(
         ("nvenc", "NVIDIA NVENC Tuning"),
         ("qsv", "Intel QSV Tuning"),
         ("amf", "AMD AMF Tuning"),
+        ("d3d12", "D3D12 Tuning"),
+        ("vulkan", "Vulkan Tuning"),
         ("software", "Software Encoder Tuning"),
         ("decode", "Source and Decode"),
         ("polish", "Output Polish"),

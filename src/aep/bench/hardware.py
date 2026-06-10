@@ -68,6 +68,11 @@ class GpuCapabilities:
     amf_h264: bool = False
     amf_hevc: bool = False
     amf_av1: bool = False
+    d3d12_h264: bool = False
+    d3d12_av1: bool = False
+    vulkan_h264: bool = False
+    vulkan_hevc: bool = False
+    vulkan_av1: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,6 +96,8 @@ class HardwareProfile:
             self.gpu.primary_vendor,
             f"{int(self.gpu.qsv_h264)}{int(self.gpu.qsv_hevc)}{int(self.gpu.qsv_av1)}",
             f"{int(self.gpu.amf_h264)}{int(self.gpu.amf_hevc)}{int(self.gpu.amf_av1)}",
+            f"{int(self.gpu.d3d12_h264)}{int(self.gpu.d3d12_av1)}",
+            f"{int(self.gpu.vulkan_h264)}{int(self.gpu.vulkan_hevc)}{int(self.gpu.vulkan_av1)}",
             ",".join(sorted(self.ffmpeg_encoders)),
         ):
             h.update(piece.encode("utf-8"))
@@ -207,6 +214,11 @@ def probe_hardware(*, ffmpeg_adapter: FFmpegAdapter | None = None) -> HardwarePr
     amf_h264 = bool(encoders) and "h264_amf" in encoders and amd_ok
     amf_hevc = bool(encoders) and "hevc_amf" in encoders and amd_ok
     amf_av1 = bool(encoders) and "av1_amf" in encoders and amd_ok
+    d3d12_h264 = bool(encoders) and "h264_d3d12" in encoders
+    d3d12_av1 = bool(encoders) and "av1_d3d12" in encoders
+    vulkan_h264 = bool(encoders) and "h264_vulkan" in encoders
+    vulkan_hevc = bool(encoders) and "hevc_vulkan" in encoders
+    vulkan_av1 = bool(encoders) and "av1_vulkan" in encoders
 
     gpu = GpuCapabilities(
         has_nvidia=has_nv,
@@ -224,6 +236,11 @@ def probe_hardware(*, ffmpeg_adapter: FFmpegAdapter | None = None) -> HardwarePr
         amf_h264=amf_h264,
         amf_hevc=amf_hevc,
         amf_av1=amf_av1,
+        d3d12_h264=d3d12_h264,
+        d3d12_av1=d3d12_av1,
+        vulkan_h264=vulkan_h264,
+        vulkan_hevc=vulkan_hevc,
+        vulkan_av1=vulkan_av1,
     )
 
     profile = HardwareProfile(
@@ -235,7 +252,8 @@ def probe_hardware(*, ffmpeg_adapter: FFmpegAdapter | None = None) -> HardwarePr
     )
     log.info(
         "hardware: cpu_cores=%d ram=%s GPU=%s arch=%s vendor=%s vram=%dMiB "
-        "nvenc(h264/hevc/av1)=%s/%s/%s qsv(h264/hevc/av1)=%s/%s/%s amf(h264/hevc/av1)=%s/%s/%s ffmpeg=%s",
+        "nvenc(h264/hevc/av1)=%s/%s/%s qsv(h264/hevc/av1)=%s/%s/%s amf(h264/hevc/av1)=%s/%s/%s "
+        "d3d12(h264/av1)=%s/%s vulkan(h264/hevc/av1)=%s/%s/%s ffmpeg=%s",
         cpu.logical_cores,
         f"{(cpu.ram_total_mib or 0) // 1024} GiB" if cpu.ram_total_mib else "?",
         primary.name if primary else "(none)",
@@ -245,6 +263,8 @@ def probe_hardware(*, ffmpeg_adapter: FFmpegAdapter | None = None) -> HardwarePr
         gpu.nvenc_h264, gpu.nvenc_hevc, gpu.nvenc_av1,
         gpu.qsv_h264, gpu.qsv_hevc, gpu.qsv_av1,
         gpu.amf_h264, gpu.amf_hevc, gpu.amf_av1,
+        gpu.d3d12_h264, gpu.d3d12_av1,
+        gpu.vulkan_h264, gpu.vulkan_hevc, gpu.vulkan_av1,
         ffmpeg_version,
     )
     return profile

@@ -21,6 +21,7 @@ Design choices, briefly:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -52,6 +53,11 @@ KNOWN_ENCODERS = {
     "h264_amf",
     "hevc_amf",
     "av1_amf",
+    "h264_d3d12",
+    "av1_d3d12",
+    "h264_vulkan",
+    "hevc_vulkan",
+    "av1_vulkan",
     "libx264",
     "libx265",
     "libsvtav1",   # software AV1 fallback; unsupported as default for anime
@@ -141,7 +147,14 @@ class FFmpegAdapter(ToolAdapter):
                 "av1" if "av1" in name else
                 "other"
             )
-            is_hw = "_nvenc" in name or "_qsv" in name or "_amf" in name or "_vaapi" in name
+            is_hw = (
+                "_nvenc" in name
+                or "_qsv" in name
+                or "_amf" in name
+                or "_vaapi" in name
+                or "_d3d12" in name
+                or "_vulkan" in name
+            )
             encoders.append(EncoderInfo(name=name, description=description,
                                         is_hardware=is_hw, family=family))
         return encoders
@@ -301,6 +314,7 @@ class FFmpegAdapter(ToolAdapter):
         start_pts: float | None = None,  # M6.5: -ss seek (input-side, before -i)
         end_pts: float | None = None,    # M6.5: -to end timestamp (output-side)
         time_pad_s: float = 0.0,  # extra -t slack for batched chunks (trimmed later)
+        loglevel: str = "error",
     ) -> list[str | Path]:
         """Build a command that decodes the source's primary video stream to a
         directory of numbered frames.
@@ -332,7 +346,7 @@ class FFmpegAdapter(ToolAdapter):
             self.command_executable(),
             "-hide_banner",
             "-nostdin",
-            "-loglevel", "error",
+            "-loglevel", loglevel,
         ]
         cmd += ["-y"] if allow_overwrite else ["-n"]
         # Input-side -ss is much faster than output-side: ffmpeg seeks to the
@@ -361,6 +375,7 @@ class FFmpegAdapter(ToolAdapter):
                 target_height=target_height,
                 bt709_normalize=bt709_normalize,
                 use_zscale=use_zscale,
+                decode_hwaccel=decode_hwaccel,
             ),
         ]
 
@@ -416,6 +431,7 @@ class FFmpegAdapter(ToolAdapter):
         start_pts: float | None = None,
         end_pts: float | None = None,
         time_pad_s: float = 0.0,
+        loglevel: str = "error",
     ) -> list[str | Path]:
         """Single decode: frame files + ``metadata=print`` scene scores via ``filter_complex``.
 
@@ -451,6 +467,7 @@ class FFmpegAdapter(ToolAdapter):
             target_height=target_height,
             bt709_normalize=bt709_normalize,
             use_zscale=use_zscale,
+            decode_hwaccel=decode_hwaccel,
         )
         fc = (
             f"[0:v]{prep}[rgb];"
@@ -462,7 +479,7 @@ class FFmpegAdapter(ToolAdapter):
             self.command_executable(),
             "-hide_banner",
             "-nostdin",
-            "-loglevel", "error",
+            "-loglevel", loglevel,
         ]
         cmd += ["-y"] if allow_overwrite else ["-n"]
         if start_pts is not None and start_pts > 0:
@@ -511,6 +528,7 @@ class FFmpegAdapter(ToolAdapter):
         source: Path,
         metadata_out: Path,
         decode_hwaccel: str = "off",
+        use_zscale: bool = False,
         start_pts: float | None = None,
         end_pts: float | None = None,
     ) -> list[str | Path]:
@@ -551,8 +569,9 @@ class FFmpegAdapter(ToolAdapter):
                 "(no path separators); pass e.g. parent / 'aep_frame_dedupe_scene.txt'",
             )
         # Comma inside select expr separates filters — escape it (see ffmpeg select examples).
+        vf_prefix = _amf_hwdownload_prefix(decode_hwaccel, use_zscale=use_zscale)
         cmd += [
-            "-vf", f"select=gt(scene+1\\,0),metadata=print:file={meta_name}",
+            "-vf", f"{vf_prefix}select=gt(scene+1\\,0),metadata=print:file={meta_name}",
             "-an", "-sn", "-dn",
             "-f", "null",
             "-",
@@ -647,12 +666,26 @@ def raise_if_failed(returncode: int, stderr_tail: str) -> None:
         )
 
 
+def _amf_hwdownload_prefix(decode_hwaccel: str, *, use_zscale: bool = False) -> str:
+    """AMF decode surfaces use the ``amf`` pix_fmt; CPU filters need ``hwdownload`` first.
+
+    ``use_zscale`` is set when the planner detected 10-bit or HDR transfer on the
+    source (see decode-serve ``hdr.was_10bit`` / ``hdr.was_hdr_transfer``). AMF
+    10-bit decode must download to ``p010le``; 8-bit sources use ``nv12``.
+    """
+    if (decode_hwaccel or "off").lower() == "amf":
+        fmt = "p010le" if use_zscale else "nv12"
+        return f"hwdownload,format={fmt},"
+    return ""
+
+
 def _decode_preprocess_vf_inner(
     *,
     target_width: int | None,
     target_height: int | None,
     bt709_normalize: bool,
     use_zscale: bool,
+    decode_hwaccel: str = "off",
 ) -> str:
     """Comma-separated vf chain (no ``-vf`` / brackets) matching decode-to-frames color path."""
     parts: list[str] = []
@@ -660,19 +693,28 @@ def _decode_preprocess_vf_inner(
         parts.append(f"scale={target_width}:{target_height}:flags=bicubic")
     if bt709_normalize:
         if use_zscale:
-            parts.append("zscale=t=bt709:m=bt709:p=bt709:r=limited,format=rgb24")
+            # AMF hwdownload surfaces omit colorspace tags; shorthand zscale then fails.
+            if (decode_hwaccel or "off").lower() == "amf":
+                parts.append(
+                    "zscale=matrixin=709:matrix=709:transferin=709:transfer=709:"
+                    "primariesin=709:primaries=709:r=limited,format=rgb24",
+                )
+            else:
+                parts.append("zscale=t=bt709:m=bt709:p=bt709:r=limited,format=rgb24")
         else:
             parts.append("format=rgb24")
     else:
         parts.append("format=rgb24")
-    return ",".join(parts)
+    chain = ",".join(parts)
+    prefix = _amf_hwdownload_prefix(decode_hwaccel, use_zscale=use_zscale)
+    return f"{prefix}{chain}" if prefix else chain
 
 
 # Decode modes that may fail at runtime (driver / build / source); stages retry with software decode.
-DECODE_HWACCEL_WITH_SW_FALLBACK = frozenset({"d3d11va", "cuda", "amf"})
+DECODE_HWACCEL_WITH_SW_FALLBACK = frozenset({"d3d12va", "d3d11va", "vulkan", "cuda", "amf"})
 
 # Modes where ``_decode_input_args`` enables FFmpeg hardware decoding (keep in sync with that helper).
-DECODE_HWACCEL_HARDWARE_MODES = frozenset({"d3d11va", "cuda", "amf"})
+DECODE_HWACCEL_HARDWARE_MODES = frozenset({"d3d12va", "d3d11va", "vulkan", "cuda", "amf"})
 
 
 def decode_hwaccel_has_sw_fallback(decode_hwaccel: str) -> bool:
@@ -684,11 +726,42 @@ def decode_hwaccel_uses_hardware_decode(decode_hwaccel: str) -> bool:
     return (decode_hwaccel or "off").lower() in DECODE_HWACCEL_HARDWARE_MODES
 
 
+def decode_hwaccel_fallback_chain(decode_hwaccel: str) -> tuple[str, ...]:
+    """Ordered fallback modes for a failed hardware decode attempt."""
+    mode = (decode_hwaccel or "off").lower()
+    if mode == "d3d12va":
+        return ("d3d11va", "off")
+    if mode == "vulkan":
+        # Vulkan Video decode is still flaky on some AMD RDNA4 builds; DXVA paths work.
+        if os.name == "nt":
+            return ("d3d12va", "d3d11va", "off")
+        return ("off",)
+    if mode == "amf":
+        if os.name == "nt":
+            return ("d3d12va", "d3d11va", "off")
+        return ("off",)
+    if mode in {"d3d11va", "cuda"}:
+        return ("off",)
+    return ()
+
+
 def _decode_input_args(source: str, *, decode_hwaccel: str) -> list[str]:
     mode = (decode_hwaccel or "off").lower()
+    if mode == "d3d12va":
+        return [
+            "-hwaccel", "d3d12va",
+            "-i", source,
+        ]
     if mode == "d3d11va":
         return [
             "-hwaccel", "d3d11va",
+            "-i", source,
+        ]
+    if mode == "vulkan":
+        return [
+            "-init_hw_device", "vulkan=vkdec:0",
+            "-hwaccel", "vulkan",
+            "-hwaccel_device", "vkdec",
             "-i", source,
         ]
     if mode == "cuda":

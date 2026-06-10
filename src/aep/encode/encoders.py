@@ -34,6 +34,7 @@ PIX_FMT_10BIT = "yuv420p10le"
 
 
 QSV_GLOBAL_PREFIX = ("-init_hw_device", "qsv=hw", "-filter_hw_device", "hw")
+VULKAN_GLOBAL_PREFIX = ("-init_hw_device", "vulkan=vk:0", "-filter_hw_device", "vk")
 
 
 @dataclass(frozen=True)
@@ -305,6 +306,97 @@ def build_amf(
     return EncodeBuildResult(args=args, pix_fmt=pix_fmt, rationale=rationale)
 
 
+def build_d3d12(
+    cfg: EncoderCfg,
+    *,
+    family: str,
+    target_width: int | None,
+    target_height: int | None,
+    source_pix_fmt: str | None,
+    fps_mode: str = "passthrough",
+) -> EncodeBuildResult:
+    rationale: list[str] = []
+    if family == "h264":
+        codec = "h264_d3d12"
+    elif family == "av1":
+        codec = "av1_d3d12"
+    else:
+        raise ValueError(f"unsupported D3D12 family: {family}")
+
+    pix_fmt = PIX_FMT_8BIT
+    if _is_10bit_pix_fmt(source_pix_fmt):
+        rationale.append(f"{codec}: source is 10-bit; using 8-bit output for compatibility.")
+
+    args = _scale_filter_if_needed(target_width, target_height) + [
+        "-c:v", codec,
+        "-pix_fmt", "nv12",
+    ]
+    if cfg.d3d12_qp >= 0:
+        args += ["-qp", str(cfg.d3d12_qp)]
+    if cfg.d3d12_quality >= 0:
+        args += ["-quality", str(cfg.d3d12_quality)]
+    args += ["-fps_mode", fps_mode]
+    args += list(cfg.extra_args)
+    rationale.append(
+        f"D3D12 {family}: qp={cfg.d3d12_qp} quality={cfg.d3d12_quality} pix_fmt=nv12"
+    )
+    return EncodeBuildResult(args=args, pix_fmt=pix_fmt, rationale=rationale)
+
+
+def build_vulkan(
+    cfg: EncoderCfg,
+    *,
+    family: str,
+    target_width: int | None,
+    target_height: int | None,
+    source_pix_fmt: str | None,
+    fps_mode: str = "passthrough",
+) -> EncodeBuildResult:
+    if family == "h264":
+        codec = "h264_vulkan"
+    elif family == "hevc":
+        codec = "hevc_vulkan"
+    elif family == "av1":
+        codec = "av1_vulkan"
+    else:
+        raise ValueError(f"unsupported Vulkan family: {family}")
+
+    rationale: list[str] = []
+    pix_fmt = PIX_FMT_8BIT
+    if _is_10bit_pix_fmt(source_pix_fmt):
+        rationale.append(f"{codec}: source is 10-bit; forcing nv12 upload for compatibility.")
+
+    vf_parts: list[str] = []
+    if target_width and target_height:
+        vf_parts.append(
+            f"scale={target_width}:{target_height}:flags=lanczos:force_original_aspect_ratio=disable"
+        )
+    vf_parts.extend(["format=nv12", "hwupload"])
+    args = [
+        "-vf", ",".join(vf_parts),
+        "-c:v", codec,
+        "-pix_fmt", "vulkan",
+    ]
+    if cfg.vulkan_qp >= 0:
+        args += ["-qp", str(cfg.vulkan_qp)]
+    if cfg.vulkan_quality >= 0:
+        args += ["-quality", str(cfg.vulkan_quality)]
+    if cfg.vulkan_async_depth > 0:
+        args += ["-async_depth", str(cfg.vulkan_async_depth)]
+    args += ["-fps_mode", fps_mode]
+    args += list(cfg.extra_args)
+    rationale.append(
+        f"Vulkan {family}: qp={cfg.vulkan_qp} quality={cfg.vulkan_quality} "
+        f"async_depth={cfg.vulkan_async_depth} upload=nv12->hwupload"
+    )
+    return EncodeBuildResult(
+        args=args,
+        pix_fmt=pix_fmt,
+        rationale=rationale,
+        global_prefix=VULKAN_GLOBAL_PREFIX,
+    )
+
+
 def build_x264(
     cfg: EncoderCfg,
     *,
@@ -418,4 +510,24 @@ def build_encoder_args(
         return build_amf(cfg, family="av1", target_width=target_width,
                          target_height=target_height, source_pix_fmt=source_pix_fmt,
                          fps_mode=fps_mode)
+    if name == "h264_d3d12":
+        return build_d3d12(cfg, family="h264", target_width=target_width,
+                           target_height=target_height, source_pix_fmt=source_pix_fmt,
+                           fps_mode=fps_mode)
+    if name == "av1_d3d12":
+        return build_d3d12(cfg, family="av1", target_width=target_width,
+                           target_height=target_height, source_pix_fmt=source_pix_fmt,
+                           fps_mode=fps_mode)
+    if name == "h264_vulkan":
+        return build_vulkan(cfg, family="h264", target_width=target_width,
+                            target_height=target_height, source_pix_fmt=source_pix_fmt,
+                            fps_mode=fps_mode)
+    if name == "hevc_vulkan":
+        return build_vulkan(cfg, family="hevc", target_width=target_width,
+                            target_height=target_height, source_pix_fmt=source_pix_fmt,
+                            fps_mode=fps_mode)
+    if name == "av1_vulkan":
+        return build_vulkan(cfg, family="av1", target_width=target_width,
+                            target_height=target_height, source_pix_fmt=source_pix_fmt,
+                            fps_mode=fps_mode)
     raise ValueError(f"unsupported encoder: {name}")
