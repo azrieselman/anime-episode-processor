@@ -31,6 +31,8 @@ log = logging.getLogger(__name__)
 # 10-bit support is limited (Hi10P is widely incompatible with hardware decoders).
 PIX_FMT_8BIT = "yuv420p"
 PIX_FMT_10BIT = "yuv420p10le"
+# AMF encoders accept P010 for 10-bit, not yuv420p10le (see FFmpeg ff_amf_pix_fmts).
+PIX_FMT_AMF_10BIT_INPUT = "p010le"
 
 
 QSV_GLOBAL_PREFIX = ("-init_hw_device", "qsv=hw", "-filter_hw_device", "hw")
@@ -207,6 +209,23 @@ def build_qsv(
     )
 
 
+def _amf_use_10bit(
+    cfg: EncoderCfg,
+    *,
+    family: str,
+    source_pix_fmt: str | None,
+) -> bool:
+    """Whether AMF HEVC/AV1 encode should emit 10-bit (p010le). h264_amf is always 8-bit."""
+    if family == "h264":
+        return False
+    mode = (cfg.amf_bit_depth or "auto").lower()
+    if mode == "8":
+        return False
+    if mode == "10":
+        return True
+    return _is_10bit_pix_fmt(source_pix_fmt)
+
+
 def _amf_quality_args(quality: str) -> list[str]:
     """Map preset ``amf_quality`` to FFmpeg AMF ``-quality`` / ``-usage`` options.
 
@@ -219,6 +238,27 @@ def _amf_quality_args(quality: str) -> list[str]:
     return ["-quality", q]
 
 
+def _amf_vf_parts(
+    *,
+    use_10: bool,
+    decode_hwaccel: str,
+    target_width: int | None,
+    target_height: int | None,
+) -> list[str]:
+    """Build AMF encode vf chain for 10-bit surfaces and optional resize."""
+    parts: list[str] = []
+    hwaccel = (decode_hwaccel or "off").lower()
+    if use_10 and hwaccel == "amf":
+        parts.append(f"hwdownload,format={PIX_FMT_AMF_10BIT_INPUT}")
+    if target_width and target_height:
+        parts.append(
+            f"scale={target_width}:{target_height}:flags=lanczos:force_original_aspect_ratio=disable"
+        )
+    if use_10 and hwaccel != "amf" and target_width and target_height:
+        parts.append(f"format={PIX_FMT_AMF_10BIT_INPUT}")
+    return parts
+
+
 def build_amf(
     cfg: EncoderCfg,
     *,
@@ -227,38 +267,59 @@ def build_amf(
     target_height: int | None,
     source_pix_fmt: str | None,
     fps_mode: str = "passthrough",
+    decode_hwaccel: str = "off",
 ) -> EncodeBuildResult:
     rationale: list[str] = []
     if family == "h264":
         codec = "h264_amf"
-        pix_fmt = PIX_FMT_8BIT
-        if _is_10bit_pix_fmt(source_pix_fmt):
+        use_10 = False
+        if cfg.amf_bit_depth == "10":
+            rationale.append(
+                "h264_amf: amf_bit_depth=10 ignored; H.264 AMF is always 8-bit."
+            )
+        elif _is_10bit_pix_fmt(source_pix_fmt):
             rationale.append(
                 "h264_amf: source is 10-bit; using 8-bit output for compatibility."
             )
     elif family == "hevc":
         codec = "hevc_amf"
-        # hevc_amf accepts nv12/yuv420p only; 10-bit output is not portable on AMF.
-        pix_fmt = PIX_FMT_8BIT
-        if _is_10bit_pix_fmt(source_pix_fmt):
-            rationale.append(
-                "hevc_amf: source is 10-bit; using 8-bit output (AMF HEVC is Main 8-bit)."
-            )
+        use_10 = _amf_use_10bit(cfg, family=family, source_pix_fmt=source_pix_fmt)
+        if use_10:
+            if cfg.amf_bit_depth == "10":
+                rationale.append("hevc_amf: amf_bit_depth=10 forces 10-bit (Main10) via p010le.")
+            else:
+                rationale.append("hevc_amf: preserving 10-bit (Main10) via p010le.")
+        elif cfg.amf_bit_depth == "8" and _is_10bit_pix_fmt(source_pix_fmt):
+            rationale.append("hevc_amf: amf_bit_depth=8 forces 8-bit output.")
     elif family == "av1":
         codec = "av1_amf"
-        pix_fmt = PIX_FMT_8BIT
-        if _is_10bit_pix_fmt(source_pix_fmt):
-            rationale.append(
-                "av1_amf: source is 10-bit; using 8-bit output for AMF compatibility."
-            )
+        use_10 = _amf_use_10bit(cfg, family=family, source_pix_fmt=source_pix_fmt)
+        if use_10:
+            if cfg.amf_bit_depth == "10":
+                rationale.append("av1_amf: amf_bit_depth=10 forces 10-bit via p010le.")
+            else:
+                rationale.append("av1_amf: preserving 10-bit via p010le.")
+        elif cfg.amf_bit_depth == "8" and _is_10bit_pix_fmt(source_pix_fmt):
+            rationale.append("av1_amf: amf_bit_depth=8 forces 8-bit output.")
     else:
         raise ValueError(f"unsupported AMF family: {family}")
 
-    vf_parts: list[str] = []
-    if target_width and target_height:
-        vf_parts.append(
-            f"scale={target_width}:{target_height}:flags=lanczos:force_original_aspect_ratio=disable"
+    result_pix_fmt = PIX_FMT_10BIT if use_10 else PIX_FMT_8BIT
+    amf_pix_fmt = PIX_FMT_AMF_10BIT_INPUT if use_10 else PIX_FMT_8BIT
+
+    # AMF 10-bit encode fails encoder Init (error 4) when preanalysis is enabled.
+    preanalysis = cfg.amf_preanalysis and not use_10
+    if cfg.amf_preanalysis and use_10:
+        rationale.append(
+            f"{codec}: preanalysis disabled for 10-bit AMF encode (AMF driver limitation)."
         )
+
+    vf_parts = _amf_vf_parts(
+        use_10=use_10,
+        decode_hwaccel=decode_hwaccel,
+        target_width=target_width,
+        target_height=target_height,
+    )
     vf_prefix: list[str] = []
     if vf_parts:
         vf_prefix = ["-vf", ",".join(vf_parts)]
@@ -267,8 +328,9 @@ def build_amf(
         "-c:v", codec,
         *_amf_quality_args(cfg.amf_quality),
         "-rc", cfg.amf_rc,
-        "-preanalysis", "true" if cfg.amf_preanalysis else "false",
+        "-preanalysis", "true" if preanalysis else "false",
         "-vbaq", "true" if cfg.amf_vbaq else "false",
+        "-preencode", "true" if cfg.amf_preencode else "false",
         # Do not set ``-header_insertion_mode idr``: AMF/ffmpeg can hang on later
         # batched encode invocations (~batch 3+). Each batch is a fresh ffmpeg process
         # and AMF still emits a keyframe at frame 0 by default.
@@ -296,14 +358,15 @@ def build_amf(
             args += ["-maxrate", str(cfg.amf_maxrate)]
         if cfg.amf_bufsize > 0:
             args += ["-bufsize", str(cfg.amf_bufsize)]
-    args += ["-pix_fmt", pix_fmt, "-fps_mode", fps_mode]
+    args += ["-pix_fmt", amf_pix_fmt, "-fps_mode", fps_mode]
     args += list(cfg.extra_args)
     rationale.append(
         f"AMD AMF {family}: quality={cfg.amf_quality} rc={cfg.amf_rc} "
-        f"preanalysis={int(cfg.amf_preanalysis)} vbaq={int(cfg.amf_vbaq)} "
-        f"g={cfg.amf_g} bf={cfg.amf_bf} pix_fmt={pix_fmt}"
+        f"bit_depth={cfg.amf_bit_depth} preanalysis={int(preanalysis)} "
+        f"vbaq={int(cfg.amf_vbaq)} preencode={int(cfg.amf_preencode)} "
+        f"g={cfg.amf_g} bf={cfg.amf_bf} pix_fmt={amf_pix_fmt}"
     )
-    return EncodeBuildResult(args=args, pix_fmt=pix_fmt, rationale=rationale)
+    return EncodeBuildResult(args=args, pix_fmt=result_pix_fmt, rationale=rationale)
 
 
 def build_d3d12(
@@ -465,6 +528,7 @@ def build_encoder_args(
     target_height: int | None,
     source_pix_fmt: str | None,
     fps_mode: str = "passthrough",
+    decode_hwaccel: str = "off",
 ) -> EncodeBuildResult:
     """Dispatch on encoder name."""
     name = cfg.name
@@ -501,15 +565,15 @@ def build_encoder_args(
     if name == "h264_amf":
         return build_amf(cfg, family="h264", target_width=target_width,
                          target_height=target_height, source_pix_fmt=source_pix_fmt,
-                         fps_mode=fps_mode)
+                         fps_mode=fps_mode, decode_hwaccel=decode_hwaccel)
     if name == "hevc_amf":
         return build_amf(cfg, family="hevc", target_width=target_width,
                          target_height=target_height, source_pix_fmt=source_pix_fmt,
-                         fps_mode=fps_mode)
+                         fps_mode=fps_mode, decode_hwaccel=decode_hwaccel)
     if name == "av1_amf":
         return build_amf(cfg, family="av1", target_width=target_width,
                          target_height=target_height, source_pix_fmt=source_pix_fmt,
-                         fps_mode=fps_mode)
+                         fps_mode=fps_mode, decode_hwaccel=decode_hwaccel)
     if name == "h264_d3d12":
         return build_d3d12(cfg, family="h264", target_width=target_width,
                            target_height=target_height, source_pix_fmt=source_pix_fmt,

@@ -20,11 +20,31 @@ def test_all_builtin_presets_parse() -> None:
         seen_ids.add(preset.meta.id)
 
 
+def test_amf_bit_depth_round_trips() -> None:
+    cfg = EncoderCfg.model_validate({"name": "hevc_amf", "amf_bit_depth": "10"})
+    assert cfg.amf_bit_depth == "10"
+    dumped = cfg.model_dump(mode="json")
+    again = EncoderCfg.model_validate(dumped)
+    assert again.amf_bit_depth == "10"
+
+
+def test_amf_bit_depth_defaults_to_auto() -> None:
+    cfg = EncoderCfg.model_validate({"name": "hevc_amf"})
+    assert cfg.amf_bit_depth == "auto"
+
+
 def test_amf_cqp_coerces_vbaq_off() -> None:
     cfg = EncoderCfg.model_validate(
         {"name": "hevc_amf", "amf_rc": "cqp", "amf_vbaq": True},
     )
     assert cfg.amf_vbaq is False
+
+
+def test_amf_cqp_coerces_preencode_off() -> None:
+    cfg = EncoderCfg.model_validate(
+        {"name": "hevc_amf", "amf_rc": "cqp", "amf_preencode": True},
+    )
+    assert cfg.amf_preencode is False
 
 
 def test_amf_vbr_latency_allows_vbaq() -> None:

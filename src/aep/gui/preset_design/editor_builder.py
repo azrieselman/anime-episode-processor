@@ -560,6 +560,9 @@ def _build_encoding_tab(
     def _sync_visibility() -> None:
         active = family_picker.active_family() if family_picker is not None else "all"
         current_rc = str(amf_rc_combo.currentData() or "") if amf_rc_combo is not None else ""
+        amf_codec = ""
+        if family_picker is not None and active == "amf":
+            amf_codec = str(family_picker._codec.currentData() or "")
         for row in visibility_rows:
             target = row.when_family
             visible = target in {"all", active}
@@ -567,6 +570,8 @@ def _build_encoding_tab(
                 visible = active == "software"
             if visible and row.when_rc:
                 visible = amf_rc_matches_when(row.when_rc, current_rc)
+            if row.path == ("encoder", "amf_bit_depth"):
+                visible = visible and active == "amf" and amf_codec in {"hevc", "av1"}
             row.label.setVisible(visible)
             row.widget.setVisible(visible)
 

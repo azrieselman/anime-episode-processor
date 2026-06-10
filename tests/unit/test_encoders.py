@@ -133,6 +133,30 @@ def test_amf_vbr_emits_maxrate_and_bufsize() -> None:
     assert "-qp_i" not in joined
 
 
+def test_amf_vbr_emits_preencode_when_enabled() -> None:
+    cfg = EncoderCfg(  # type: ignore[arg-type]
+        name="hevc_amf",
+        amf_rc="vbr_peak",
+        amf_preencode=True,
+        amf_vbaq=True,
+    )
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    joined = " ".join(r.args)
+    assert "-preencode true" in joined
+    assert "-vbaq true" in joined
+
+
+def test_amf_cqp_emits_preencode_false() -> None:
+    cfg = EncoderCfg(  # type: ignore[arg-type]
+        name="hevc_amf",
+        amf_rc="cqp",
+        amf_preencode=True,
+    )
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    joined = " ".join(r.args)
+    assert "-preencode false" in joined
+
+
 def test_amf_emits_bf_and_pa_options() -> None:
     cfg = EncoderCfg(  # type: ignore[arg-type]
         name="hevc_amf",
@@ -201,3 +225,111 @@ def test_nvenc_relaxed_strategies_non_nvenc_is_identity() -> None:
 
     cfg = EncoderCfg(name="libx264")  # type: ignore[arg-type]
     assert nvenc_relaxed_strategies(cfg, source_is_10bit=True) == [(cfg, None)]
+
+
+def test_hevc_amf_auto_10bit_source_uses_p010le() -> None:
+    cfg = EncoderCfg(name="hevc_amf", amf_bit_depth="auto", amf_preanalysis=True)  # type: ignore[arg-type]
+    r = build_encoder_args(
+        cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p10le",
+    )
+    joined = " ".join(r.args)
+    assert "-pix_fmt p010le" in joined
+    assert "-preanalysis false" in joined
+    assert r.pix_fmt == "yuv420p10le"
+    assert any("Main10" in note for note in r.rationale)
+    assert any("preanalysis disabled" in note for note in r.rationale)
+
+
+def test_hevc_amf_force_10_on_8bit_source() -> None:
+    cfg = EncoderCfg(name="hevc_amf", amf_bit_depth="10")  # type: ignore[arg-type]
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    joined = " ".join(r.args)
+    assert "-pix_fmt p010le" in joined
+    assert any("amf_bit_depth=10" in note for note in r.rationale)
+
+
+def test_hevc_amf_force_8_on_10bit_source() -> None:
+    cfg = EncoderCfg(name="hevc_amf", amf_bit_depth="8")  # type: ignore[arg-type]
+    r = build_encoder_args(
+        cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p10le",
+    )
+    joined = " ".join(r.args)
+    assert "-pix_fmt yuv420p" in joined
+    assert r.pix_fmt == "yuv420p"
+    assert any("amf_bit_depth=8" in note for note in r.rationale)
+
+
+def test_av1_amf_force_10_uses_p010le() -> None:
+    cfg = EncoderCfg(name="av1_amf", amf_bit_depth="10")  # type: ignore[arg-type]
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    joined = " ".join(r.args)
+    assert "-pix_fmt p010le" in joined
+
+
+def test_h264_amf_ignores_bit_depth_10() -> None:
+    cfg = EncoderCfg(name="h264_amf", amf_bit_depth="10")  # type: ignore[arg-type]
+    r = build_encoder_args(
+        cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p10le",
+    )
+    joined = " ".join(r.args)
+    assert "-pix_fmt yuv420p" in joined
+    assert any("ignored" in note for note in r.rationale)
+
+
+def test_hevc_amf_10bit_scale_includes_format_p010le() -> None:
+    cfg = EncoderCfg(name="hevc_amf", amf_bit_depth="auto")  # type: ignore[arg-type]
+    r = build_encoder_args(
+        cfg, target_width=1920, target_height=1080, source_pix_fmt="yuv420p10le",
+    )
+    vf_idx = r.args.index("-vf")
+    assert "format=p010le" in r.args[vf_idx + 1]
+    assert "scale=1920:1080" in r.args[vf_idx + 1]
+
+
+def test_hevc_amf_10bit_amf_hwaccel_uses_hwdownload() -> None:
+    cfg = EncoderCfg(name="hevc_amf", amf_bit_depth="auto")  # type: ignore[arg-type]
+    r = build_encoder_args(
+        cfg,
+        target_width=None,
+        target_height=None,
+        source_pix_fmt="yuv420p10le",
+        decode_hwaccel="amf",
+    )
+    vf_idx = r.args.index("-vf")
+    assert "hwdownload,format=p010le" in r.args[vf_idx + 1]
+
+
+def test_amf_relaxed_strategies_10bit_source_adds_8bit_fallback() -> None:
+    from aep.pipeline.stages.s08_encode import amf_relaxed_strategies
+
+    cfg = EncoderCfg(name="hevc_amf", amf_bit_depth="auto")  # type: ignore[arg-type]
+    flat = amf_relaxed_strategies(cfg, source_is_10bit=True)
+    assert len(flat) == 2
+    assert flat[0][0].amf_bit_depth == "auto"
+    assert flat[1][0].amf_bit_depth == "8"
+
+
+def test_amf_relaxed_strategies_force_10_adds_8bit_fallback() -> None:
+    from aep.pipeline.stages.s08_encode import amf_relaxed_strategies
+
+    cfg = EncoderCfg(name="av1_amf", amf_bit_depth="10")  # type: ignore[arg-type]
+    flat = amf_relaxed_strategies(cfg, source_is_10bit=False)
+    assert len(flat) == 2
+    assert flat[1][0].amf_bit_depth == "8"
+
+
+def test_amf_relaxed_strategies_force_8_single_attempt() -> None:
+    from aep.pipeline.stages.s08_encode import amf_relaxed_strategies
+
+    cfg = EncoderCfg(name="hevc_amf", amf_bit_depth="8")  # type: ignore[arg-type]
+    flat = amf_relaxed_strategies(cfg, source_is_10bit=True)
+    assert flat == [(cfg, None)]
+
+
+def test_encoder_relaxed_strategies_dispatches_amf() -> None:
+    from aep.pipeline.stages.s08_encode import encoder_relaxed_strategies
+
+    cfg = EncoderCfg(name="hevc_amf", amf_bit_depth="10")  # type: ignore[arg-type]
+    flat = encoder_relaxed_strategies(cfg, source_is_10bit=False)
+    assert len(flat) == 2
+    assert flat[1][0].amf_bit_depth == "8"

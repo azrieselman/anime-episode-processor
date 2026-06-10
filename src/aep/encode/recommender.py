@@ -181,11 +181,15 @@ def recommend(
 def _coerce_amf(cfg: EncoderCfg) -> tuple[EncoderCfg, list[str]]:
     if not cfg.name.endswith("_amf"):
         return cfg, []
-    before = cfg.amf_vbaq
+    before_vbaq = cfg.amf_vbaq
+    before_preencode = cfg.amf_preencode
     cfg = coerce_amf_encoder(cfg)
-    if before and not cfg.amf_vbaq:
-        return cfg, ["AMF VBAQ disabled: incompatible with CQP rate control."]
-    return cfg, []
+    rationale: list[str] = []
+    if before_vbaq and not cfg.amf_vbaq:
+        rationale.append("AMF VBAQ disabled: incompatible with CQP rate control.")
+    if before_preencode and not cfg.amf_preencode:
+        rationale.append("AMF preencode disabled: incompatible with CQP rate control.")
+    return cfg, rationale
 
 
 def _nvenc_chain(

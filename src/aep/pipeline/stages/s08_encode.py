@@ -90,6 +90,52 @@ def nvenc_relaxed_strategies(
     return strategies
 
 
+def amf_relaxed_strategies(
+    cfg: EncoderCfg, *, source_is_10bit: bool,
+) -> list[tuple[EncoderCfg, str | None]]:
+    """Ordered AMF attempts: preset bit depth first, then 8-bit fallback on failure.
+
+  10-bit is attempted when ``amf_bit_depth`` is ``10``, or ``auto`` with a 10-bit
+    source on ``hevc_amf`` / ``av1_amf``. ``amf_bit_depth=8`` skips 10-bit entirely.
+    """
+    if not cfg.name.endswith("_amf"):
+        return [(cfg, None)]
+
+    strategies: list[tuple[EncoderCfg, str | None]] = []
+    seen: set[tuple[object, ...]] = set()
+
+    def push(c: EncoderCfg, pix_override: str | None) -> None:
+        key = (c.name, c.amf_bit_depth, pix_override)
+        if key not in seen:
+            seen.add(key)
+            strategies.append((c, pix_override))
+
+    push(cfg, None)
+
+    use_10_first = (
+        cfg.name in ("hevc_amf", "av1_amf")
+        and (
+            cfg.amf_bit_depth == "10"
+            or (cfg.amf_bit_depth == "auto" and source_is_10bit)
+        )
+    )
+    if use_10_first:
+        push(cfg.model_copy(update={"amf_bit_depth": "8"}), None)
+
+    return strategies
+
+
+def encoder_relaxed_strategies(
+    cfg: EncoderCfg, *, source_is_10bit: bool,
+) -> list[tuple[EncoderCfg, str | None]]:
+    """Dispatch relaxed encode attempts per hardware encoder family."""
+    if cfg.name.endswith("_nvenc"):
+        return nvenc_relaxed_strategies(cfg, source_is_10bit=source_is_10bit)
+    if cfg.name.endswith("_amf"):
+        return amf_relaxed_strategies(cfg, source_is_10bit=source_is_10bit)
+    return [(cfg, None)]
+
+
 class EncodeStage(BaseStage):
     name = "08_encode"
 
@@ -184,7 +230,7 @@ class EncodeStage(BaseStage):
         th = target_h if isinstance(target_h, int) else None
         source_pix = primary.pix_fmt if primary else None
         source_is_10bit = _is_10bit_pix_fmt(source_pix)
-        strategies = nvenc_relaxed_strategies(cfg, source_is_10bit=source_is_10bit)
+        strategies = encoder_relaxed_strategies(cfg, source_is_10bit=source_is_10bit)
 
         events.emit(StageEvent(
             ctx.job_id, self.name, "started",
@@ -198,12 +244,14 @@ class EncodeStage(BaseStage):
         for strat_idx, (attempt_cfg, pix_override) in enumerate(strategies):
             eff_pix = pix_override if pix_override is not None else source_pix
             encode_fps_mode = "cfr" if mode == "frames" else "passthrough"
+            eff_hwaccel = decode_hwaccel if mode == "source" else "off"
             build = build_encoder_args(
                 attempt_cfg,
                 target_width=tw,
                 target_height=th,
                 source_pix_fmt=eff_pix,
                 fps_mode=encode_fps_mode,
+                decode_hwaccel=eff_hwaccel,
             )
             if strat_idx == 0:
                 for r in build.rationale:
@@ -316,8 +364,8 @@ class EncodeStage(BaseStage):
                         self.name,
                         "warning",
                         message=(
-                            "encode: NVENC failed with the preset's quality knobs; "
-                            "succeeded after relaxing multipass / AQ / bit depth"
+                            "encode: hardware encoder failed with the preset's settings; "
+                            "succeeded after relaxing encoder options / bit depth"
                         ),
                     ))
                 break
@@ -328,7 +376,7 @@ class EncodeStage(BaseStage):
                     self.name,
                     "warning",
                     message=(
-                        "encode: NVENC failed; retrying with safer encoder settings "
+                        "encode: hardware encoder failed; retrying with safer settings "
                         f"(stderr tail: {result.stderr[-400:]!r})"
                     ),
                 ))

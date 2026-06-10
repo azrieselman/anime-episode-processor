@@ -100,6 +100,7 @@ QsvPreset = Literal[
 ]
 AmfQuality = Literal["speed", "balanced", "quality", "high_quality"]
 AmfRc = Literal["cqp", "vbr_peak", "cbr", "vbr_latency"]
+AmfBitDepth = Literal["auto", "8", "10"]
 ContainerName = Literal["mkv", "mp4"]
 
 
@@ -122,11 +123,17 @@ def amf_rc_matches_when(when_rc: str, rc: str) -> bool:
 
 
 def coerce_amf_encoder(cfg: "EncoderCfg") -> "EncoderCfg":
-    """Disable VBAQ when AMF RC is CQP; enabling both breaks AMF encoding."""
+    """Disable VBAQ/preencode when AMF RC is CQP (both are incompatible with CQP)."""
     if not cfg.name.endswith("_amf"):
         return cfg
-    if amf_rc_is_cqp(cfg.amf_rc) and cfg.amf_vbaq:
-        return cfg.model_copy(update={"amf_vbaq": False})
+    updates: dict[str, object] = {}
+    if amf_rc_is_cqp(cfg.amf_rc):
+        if cfg.amf_vbaq:
+            updates["amf_vbaq"] = False
+        if cfg.amf_preencode:
+            updates["amf_preencode"] = False
+    if updates:
+        return cfg.model_copy(update=updates)
     return cfg
 ContentClass = Literal["anime_2d", "anime_compressed", "mixed", "auto"]
 DecodeHwaccelMode = Literal["auto", "off", "d3d12va", "d3d11va", "vulkan", "cuda", "amf"]
@@ -393,6 +400,15 @@ class EncoderCfg(BaseModel):
         description="Enable low-power QSV encode mode when available.",
         json_schema_extra=_gui("encoding", "advanced", group="qsv", when_family="qsv"),
     )
+    amf_bit_depth: AmfBitDepth = Field(
+        default="auto",
+        description=(
+            "AMF output bit depth for HEVC/AV1. auto follows the source; "
+            "8 forces 8-bit output; 10 forces 10-bit (p010le). "
+            "Ignored for h264_amf (always 8-bit)."
+        ),
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
+    )
     amf_quality: AmfQuality = Field(
         default="quality",
         description="AMD AMF -quality (speed, balanced, quality, high_quality).",
@@ -460,6 +476,16 @@ class EncoderCfg(BaseModel):
     amf_vbaq: bool = Field(
         default=False,
         description="Enable AMF VBAQ adaptive quantization (incompatible with CQP rate control).",
+        json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
+    )
+    amf_preencode: bool = Field(
+        default=False,
+        description=(
+            "Enable AMF pre-encode assisted rate control (-preencode). "
+            "Analyzes frame complexity before encoding to improve rate control; "
+            "compatible with VBR/CBR modes, VBAQ, and preanalysis. "
+            "Incompatible with CQP rate control."
+        ),
         json_schema_extra=_gui("encoding", "advanced", group="amf", when_family="amf"),
     )
     amf_g: int = Field(
@@ -578,6 +604,7 @@ class EncoderCfg(BaseModel):
     def _coerce_amf_vbaq_for_rc(self) -> "EncoderCfg":
         if self.name.endswith("_amf") and amf_rc_is_cqp(self.amf_rc):
             self.amf_vbaq = False
+            self.amf_preencode = False
         return self
 
 
