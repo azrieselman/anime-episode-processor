@@ -26,7 +26,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-
 SHA256_TBD = "TBD-FILL-IN-AFTER-DOWNLOAD"
 
 

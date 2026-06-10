@@ -17,9 +17,9 @@ from aep.jobs.broker import merge_preset_data_for_job
 from aep.persist.presets import Preset, load_preset
 from aep.persist.settings import load_settings
 from aep.pipeline.context import PipelineContext
-from aep.pipeline.stage import StageResult
 from aep.pipeline.events import EventSink, StageEvent
 from aep.pipeline.runner import PipelineRunner, build_default_stages
+from aep.pipeline.stage import StageResult
 from aep.util.paths import bench_dir
 
 log = logging.getLogger(__name__)
