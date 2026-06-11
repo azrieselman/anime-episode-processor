@@ -23,6 +23,7 @@ from aep.adapters.ncnn_base import (
     load_tile_hint,
     save_tile_hint,
     stderr_indicates_oom,
+    stderr_indicates_vulkan_gpu_fault,
 )
 from aep.adapters.realcugan import CuganJob, RealCuganAdapter
 from aep.adapters.realesrgan import EsrganJob, RealesrganAdapter
@@ -67,6 +68,22 @@ def test_stderr_indicates_oom_rejects_normal_output() -> None:
     assert not stderr_indicates_oom("processing frame 100/240")
     assert not stderr_indicates_oom("done")
     assert not stderr_indicates_oom("")
+
+
+@pytest.mark.parametrize("stderr", [
+    "vkQueueSubmit failed -4",
+    "VK_ERROR_DEVICE_LOST",
+    "vkDeviceWaitIdle failed",
+    "vkAcquireNextImageKHR failed -4",
+])
+def test_stderr_indicates_vulkan_gpu_fault_matches_known_patterns(stderr: str) -> None:
+    assert stderr_indicates_vulkan_gpu_fault(stderr)
+
+
+def test_stderr_indicates_vulkan_gpu_fault_rejects_normal_output() -> None:
+    assert not stderr_indicates_vulkan_gpu_fault("processing frame 100/240")
+    assert not stderr_indicates_vulkan_gpu_fault("done")
+    assert not stderr_indicates_vulkan_gpu_fault("")
 
 
 def test_ncnn_detect_version_finds_yyyymmdd_in_banner(

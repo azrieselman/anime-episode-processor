@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aep.persist.presets import EncoderCfg, Preset, _load_yaml_file, amf_rc_matches_when
+from aep.persist.presets import (
+    EncoderCfg,
+    Preset,
+    _load_yaml_file,
+    amf_rc_matches_when,
+    encoder_rc_matches_when,
+    nvenc_rc_matches_when,
+)
 
 
 def test_all_builtin_presets_parse() -> None:
@@ -62,6 +69,19 @@ def test_amf_rc_matches_when_tokens() -> None:
     assert amf_rc_matches_when("vbr", "vbr_latency")
     assert not amf_rc_matches_when("vbr", "cbr")
     assert amf_rc_matches_when("cbr", "cbr")
+
+
+def test_nvenc_rc_matches_when_tokens() -> None:
+    assert nvenc_rc_matches_when("vbr", "vbr")
+    assert nvenc_rc_matches_when("cqp", "constqp")
+    assert not nvenc_rc_matches_when("vbr", "constqp")
+    assert nvenc_rc_matches_when("cbr", "cbr")
+
+
+def test_encoder_rc_matches_when_dispatches_by_family() -> None:
+    assert encoder_rc_matches_when("vbr", "nvenc", "vbr")
+    assert encoder_rc_matches_when("vbr", "amf", "vbr_peak")
+    assert not encoder_rc_matches_when("vbr", "qsv", "vbr")
 
 
 def test_required_default_preset_present() -> None:

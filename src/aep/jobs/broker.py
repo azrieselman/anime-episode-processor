@@ -41,7 +41,7 @@ from aep.media.models import MediaInfo
 from aep.persist.presets import Preset, load_preset
 from aep.persist.settings import load_settings
 from aep.pipeline.context import PipelineContext
-from aep.pipeline.events import EventSink, StageEvent
+from aep.pipeline.events import EventSink, StageEvent, stage_event_log_text
 from aep.pipeline.runner import PipelineRunner, build_default_stages
 from aep.util.paths import jobs_dir
 
@@ -920,6 +920,11 @@ class JobBroker:
             if job.progress < stage_finished_progress:
                 job.progress = stage_finished_progress
                 dirty = True
+
+        if ev.kind == "log":
+            text = stage_event_log_text(ev)
+            if text is not None:
+                log.debug("[%s] %s", ev.stage, text)
 
         if dirty:
             update_job(job)

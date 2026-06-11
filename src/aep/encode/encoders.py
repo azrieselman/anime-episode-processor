@@ -105,13 +105,14 @@ def build_nvenc(
     else:
         raise ValueError(f"unsupported NVENC family: {family}")
 
+    b_v = str(cfg.nvenc_bitrate) if cfg.nvenc_rc == "vbr" else "0"
     args = [
         "-c:v", codec,
         "-preset", cfg.nvenc_preset,
         "-tune", cfg.nvenc_tune,
         "-rc", cfg.nvenc_rc,
         "-cq", str(cfg.nvenc_cq),
-        "-b:v", "0",                    # constant-quality VBR — let cq drive
+        "-b:v", b_v,
         "-pix_fmt", pix_fmt,
         "-multipass", cfg.nvenc_multipass,
         "-spatial_aq", "1" if cfg.nvenc_spatial_aq else "0",
@@ -125,8 +126,8 @@ def build_nvenc(
     args += list(cfg.extra_args)
 
     rationale.append(
-        f"NVENC {family}: preset={cfg.nvenc_preset} cq={cfg.nvenc_cq} "
-        f"multipass={cfg.nvenc_multipass} spatial_aq={int(cfg.nvenc_spatial_aq)} "
+        f"NVENC {family}: preset={cfg.nvenc_preset} rc={cfg.nvenc_rc} cq={cfg.nvenc_cq} "
+        f"b:v={b_v} multipass={cfg.nvenc_multipass} spatial_aq={int(cfg.nvenc_spatial_aq)} "
         f"temporal_aq={int(cfg.nvenc_temporal_aq)} bf={cfg.nvenc_bframes}"
     )
     return EncodeBuildResult(args=args, pix_fmt=pix_fmt, rationale=rationale)
@@ -226,6 +227,20 @@ def _amf_use_10bit(
     return _is_10bit_pix_fmt(source_pix_fmt)
 
 
+def _amf_10bit_frame_scale_part(
+    target_width: int | None,
+    target_height: int | None,
+) -> str:
+    """RGB frame path → limited BT.709 P010 for AMF (zscale has no RGB→P010 path)."""
+    color = "out_color_matrix=bt709:out_range=tv"
+    if target_width and target_height:
+        return (
+            f"scale={target_width}:{target_height}:flags=lanczos:"
+            f"force_original_aspect_ratio=disable:{color},format={PIX_FMT_AMF_10BIT_INPUT}"
+        )
+    return f"scale={color},format={PIX_FMT_AMF_10BIT_INPUT}"
+
+
 def _amf_quality_args(quality: str) -> list[str]:
     """Map preset ``amf_quality`` to FFmpeg AMF ``-quality`` / ``-usage`` options.
 
@@ -250,12 +265,18 @@ def _amf_vf_parts(
     hwaccel = (decode_hwaccel or "off").lower()
     if use_10 and hwaccel == "amf":
         parts.append(f"hwdownload,format={PIX_FMT_AMF_10BIT_INPUT}")
-    if target_width and target_height:
+        if target_width and target_height:
+            parts.append(
+                f"scale={target_width}:{target_height}:flags=lanczos:"
+                f"force_original_aspect_ratio=disable"
+            )
+    elif use_10:
+        # CPU / frame path: RGB PNGs need scale's BT.709 limited conversion to P010.
+        parts.append(_amf_10bit_frame_scale_part(target_width, target_height))
+    elif target_width and target_height:
         parts.append(
             f"scale={target_width}:{target_height}:flags=lanczos:force_original_aspect_ratio=disable"
         )
-    if use_10 and hwaccel != "amf" and target_width and target_height:
-        parts.append(f"format={PIX_FMT_AMF_10BIT_INPUT}")
     return parts
 
 
@@ -289,6 +310,10 @@ def build_amf(
                 rationale.append("hevc_amf: amf_bit_depth=10 forces 10-bit (Main10) via p010le.")
             else:
                 rationale.append("hevc_amf: preserving 10-bit (Main10) via p010le.")
+            if (decode_hwaccel or "off").lower() != "amf":
+                rationale.append(
+                    "hevc_amf: scale BT.709 limited (tv) before p010le for frame-path color accuracy."
+                )
         elif cfg.amf_bit_depth == "8" and _is_10bit_pix_fmt(source_pix_fmt):
             rationale.append("hevc_amf: amf_bit_depth=8 forces 8-bit output.")
     elif family == "av1":
@@ -299,6 +324,10 @@ def build_amf(
                 rationale.append("av1_amf: amf_bit_depth=10 forces 10-bit via p010le.")
             else:
                 rationale.append("av1_amf: preserving 10-bit via p010le.")
+            if (decode_hwaccel or "off").lower() != "amf":
+                rationale.append(
+                    "av1_amf: scale BT.709 limited (tv) before p010le for frame-path color accuracy."
+                )
         elif cfg.amf_bit_depth == "8" and _is_10bit_pix_fmt(source_pix_fmt):
             rationale.append("av1_amf: amf_bit_depth=8 forces 8-bit output.")
     else:
@@ -354,11 +383,24 @@ def build_amf(
         if family == "h264":
             args += ["-qp_b", str(cfg.amf_qp_b)]
     elif rc_lower in {"vbr_peak", "vbr_latency"}:
+        if cfg.amf_bitrate > 0:
+            args += ["-b:v", str(cfg.amf_bitrate)]
         if cfg.amf_maxrate > 0:
             args += ["-maxrate", str(cfg.amf_maxrate)]
         if cfg.amf_bufsize > 0:
             args += ["-bufsize", str(cfg.amf_bufsize)]
-    args += ["-pix_fmt", amf_pix_fmt, "-fps_mode", fps_mode]
+    args += ["-pix_fmt", amf_pix_fmt]
+    if use_10:
+        args += [
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+            "-colorspace", "bt709",
+            "-color_range", "tv",
+        ]
+        rationale.append(
+            f"{codec}: tagging output BT.709 limited (tv) for Main10 playback."
+        )
+    args += ["-fps_mode", fps_mode]
     args += list(cfg.extra_args)
     rationale.append(
         f"AMD AMF {family}: quality={cfg.amf_quality} rc={cfg.amf_rc} "

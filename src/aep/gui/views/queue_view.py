@@ -1,7 +1,6 @@
 """Queue view: drop area + table of jobs.
 
-Subscribes to broker events, refreshes on Job updates and StageEvents. We deliberately
-use a `QTimer`-driven refresh rather than tying every cell to a signal — at the scale
+Refreshes on a `QTimer` rather than tying every cell to a broker signal — at the scale
 of "tens of jobs", a 250 ms refresh is invisible to the user and dramatically simpler.
 """
 
@@ -35,7 +34,6 @@ from aep.gui import theme
 from aep.gui.widgets.drop_area import DropArea
 from aep.jobs.models import Job, JobState
 from aep.jobs.queue import QueuedDispatchOrder
-from aep.pipeline.events import StageEvent
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +106,6 @@ class QueueView(QWidget):
         self._services = services
         self._file_sort_mode: _FILE_SORT_MODE = "queue"
         self._build_ui()
-        self._wire_events()
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(250)
         self._refresh_timer.timeout.connect(self._refresh)
@@ -209,9 +206,6 @@ class QueueView(QWidget):
         self._sync_job_id_column_visibility()
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
         root.addWidget(self._table, 1)
-
-    def _wire_events(self) -> None:
-        self._services.jobs.subscribe(self._on_broker_event)
 
     def reload_presets(self) -> None:
         """Refresh preset combo from disk (e.g. after Preset Designer save)."""
@@ -323,13 +317,6 @@ class QueueView(QWidget):
         if clicked is cancel_btn:
             return "cancel"
         return "no"
-
-    # ----- broker -------------------------------------------------
-
-    def _on_broker_event(self, payload) -> None:  # type: ignore[no-untyped-def]
-        # Called from broker thread. Don't touch widgets here; the QTimer refresh handles it.
-        if isinstance(payload, StageEvent):
-            log.debug("event %s/%s: %s", payload.job_id, payload.stage, payload.kind)
 
     # ----- table refresh ------------------------------------------
 

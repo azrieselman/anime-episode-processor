@@ -39,7 +39,7 @@ from aep.errors import CancelledError, PausedError, PipelineError, StageError
 from aep.persist.settings import load_settings
 from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.context import PipelineContext
-from aep.pipeline.events import EventSink, StageEvent
+from aep.pipeline.events import EventSink, StageEvent, emit_tool_log
 from aep.pipeline.stage import BaseStage, StagePlan, StageResult
 from aep.util.frame_dedupe import expand_upscale_output_dir
 from aep.util.proc import ProcInterrupted
@@ -500,10 +500,14 @@ class UpscaleStage(BaseStage):
 
 def _maybe_emit_progress(ctx: PipelineContext, events: EventSink, stage: str, line: str) -> None:
     """NCNN binaries occasionally emit per-frame "x/y" progress lines on stderr.
-    We emit them as ``log`` events so the GUI can surface them.
+
+    At DEBUG log level every stderr line is forwarded; otherwise only progress-like
+    lines are emitted so the broker can surface them in the job log.
     """
     s = line.strip()
     if not s:
         return
-    if "/" in s and any(ch.isdigit() for ch in s):
+    if logging.getLogger().isEnabledFor(logging.DEBUG):
+        emit_tool_log(events, ctx.job_id, stage, s)
+    elif "/" in s and any(ch.isdigit() for ch in s):
         events.emit(StageEvent(ctx.job_id, stage, "log", message=s))

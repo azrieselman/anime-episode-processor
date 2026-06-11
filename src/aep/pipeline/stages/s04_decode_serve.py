@@ -42,7 +42,7 @@ from aep.pipeline.batch_timing import (
 )
 from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.context import PipelineContext
-from aep.pipeline.events import EventSink, StageEvent
+from aep.pipeline.events import EventSink, StageEvent, emit_tool_log
 from aep.pipeline.stage import BaseStage, StagePlan, StageResult
 from aep.util.frame_dedupe import (
     SCENE_SCORE_META_BASENAME,
@@ -813,7 +813,9 @@ class DecodeServeStage(BaseStage):
         cancel/pause keeps working; modes without hwaccel fallback bubble up unchanged.
         """
         try:
-            result = _run_capture_via_streaming(primary_cmd, ctx)
+            result = _run_capture_via_streaming(
+                primary_cmd, ctx, events=events, stage=self.name,
+            )
             return result, False
         except ProcError as exc:
             fallback_modes = decode_hwaccel_fallback_chain(decode_hwaccel)
@@ -869,12 +871,23 @@ class DecodeServeStage(BaseStage):
         return result, True
 
 
-def _run_capture_via_streaming(cmd: list, ctx: PipelineContext) -> ProcResult:
+def _run_capture_via_streaming(
+    cmd: list,
+    ctx: PipelineContext,
+    *,
+    events: EventSink | None = None,
+    stage: str | None = None,
+) -> ProcResult:
     """Drain ``run_streaming`` and return a ProcResult for a successful run.
 
     Raises ``ProcError`` on non-zero exit (preserving the wrapped result) and
     ``ProcInterrupted`` on cancel/pause.
     """
+    emit_tool = (
+        events is not None
+        and stage is not None
+        and logging.getLogger().isEnabledFor(logging.DEBUG)
+    )
     stderr_lines: list[str] = []
     for stream, line in run_streaming(
         cmd,
@@ -884,6 +897,8 @@ def _run_capture_via_streaming(cmd: list, ctx: PipelineContext) -> ProcResult:
     ):
         if stream == "stderr":
             stderr_lines.append(line)
+            if emit_tool:
+                emit_tool_log(events, ctx.job_id, stage, line)
     return ProcResult([str(c) for c in cmd], 0, "", "\n".join(stderr_lines))
 
 

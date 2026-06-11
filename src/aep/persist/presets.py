@@ -122,6 +122,28 @@ def amf_rc_matches_when(when_rc: str, rc: str) -> bool:
     return cur == key
 
 
+def nvenc_rc_matches_when(when_rc: str, rc: str) -> bool:
+    """True when an NVENC ``-rc`` value matches a preset-editor ``when_rc`` token."""
+    key = when_rc.lower()
+    cur = rc.lower()
+    if key == "cqp":
+        return cur == "constqp"
+    if key == "vbr":
+        return cur == "vbr"
+    if key == "cbr":
+        return cur == "cbr"
+    return cur == key
+
+
+def encoder_rc_matches_when(when_rc: str, family: str, rc: str) -> bool:
+    """True when the active encoder family's ``-rc`` matches a ``when_rc`` token."""
+    if family == "amf":
+        return amf_rc_matches_when(when_rc, rc)
+    if family == "nvenc":
+        return nvenc_rc_matches_when(when_rc, rc)
+    return False
+
+
 def coerce_amf_encoder(cfg: "EncoderCfg") -> "EncoderCfg":
     """Disable VBAQ/preencode when AMF RC is CQP (both are incompatible with CQP)."""
     if not cfg.name.endswith("_amf"):
@@ -330,6 +352,17 @@ class EncoderCfg(BaseModel):
         description="NVENC constant-quality target when using CQ-style modes (lower = higher quality).",
         json_schema_extra=_gui("encoding", "simple", group="quality", when_family="nvenc"),
     )
+    nvenc_bitrate: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "NVENC -b:v target in bits/s for VBR (e.g. 8000000 = 8 Mbps). "
+            "0 leaves quality-driven VBR via -cq."
+        ),
+        json_schema_extra=_gui(
+            "encoding", "simple", group="quality", when_family="nvenc", when_rc="vbr",
+        ),
+    )
     nvenc_multipass: NvencMultipass = Field(
         default="qres",
         description="NVENC multipass setting (e.g. fullres, qres, disabled per ffmpeg).",
@@ -444,6 +477,17 @@ class EncoderCfg(BaseModel):
         description="AMD AMF -qp_b when using CQP-style modes (H.264 AMF only).",
         json_schema_extra=_gui(
             "encoding", "advanced", group="amf", when_family="amf", when_rc="cqp",
+        ),
+    )
+    amf_bitrate: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "AMD AMF -b:v target in bits/s for VBR modes (e.g. 8000000 = 8 Mbps). "
+            "0 leaves the encoder default."
+        ),
+        json_schema_extra=_gui(
+            "encoding", "simple", group="quality", when_family="amf", when_rc="vbr",
         ),
     )
     amf_maxrate: int = Field(

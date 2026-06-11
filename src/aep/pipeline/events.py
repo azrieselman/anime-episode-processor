@@ -29,6 +29,26 @@ class StageEvent:
 EventCallback = Callable[[StageEvent], None]
 
 
+def emit_tool_log(events: EventSink, job_id: str, stage: str, line: str) -> None:
+    """Forward a subprocess stderr/stdout line as a stage ``log`` event."""
+    text = line.strip()
+    if text:
+        events.emit(StageEvent(job_id, stage, "log", message=text))
+
+
+def stage_event_log_text(event: StageEvent) -> str | None:
+    """Return the tool-output text carried by a ``log`` event, if any."""
+    text = (event.message or "").strip()
+    if text:
+        return text
+    extra = event.extra if isinstance(event.extra, dict) else {}
+    raw = extra.get("ffmpeg_line")
+    if isinstance(raw, str):
+        text = raw.strip()
+        return text or None
+    return None
+
+
 class EventSink:
     """Fan-out event emitter; supports multiple subscribers."""
 

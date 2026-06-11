@@ -41,7 +41,7 @@ import shutil
 import time
 from pathlib import Path
 
-from aep.adapters.ncnn_base import empty_dir
+from aep.adapters.ncnn_base import empty_dir, stderr_indicates_vulkan_gpu_fault
 from aep.adapters.rife import (
     RifeAdapter,
     RifeJob,
@@ -71,6 +71,9 @@ from aep.util.frame_dedupe import (
 from aep.util.proc import ProcError, ProcInterrupted, run_streaming
 
 log = logging.getLogger(__name__)
+
+# RIFE may log vkQueueSubmit failures without exiting; retry the full invocation.
+_MAX_RIFE_GPU_FAULT_ATTEMPTS = 3
 
 
 class InterpolateStage(BaseStage):
@@ -413,7 +416,6 @@ class InterpolateStage(BaseStage):
         ctx: PipelineContext,
         events: EventSink,
     ) -> None:
-        # RIFE rarely OOMs but we still flow stderr through the event log.
         job = RifeJob(
             input_dir=input_dir, output_dir=output_dir,
             version=version, multiplier=multiplier,
@@ -421,22 +423,97 @@ class InterpolateStage(BaseStage):
             threads=threads,
         )
         argv = adapter.build_rife_argv(job)
-        try:
-            for stream, line in run_streaming(
-                argv,
-                should_interrupt=lambda: "cancel" if ctx.cancel_event.is_set() else (
-                    "pause" if ctx.pause_event.is_set() else None
-                ),
-            ):
-                if stream == "stderr" and line.strip():
-                    events.emit(StageEvent(ctx.job_id, self.name, "log", message=line.strip()))
-        except ProcError as exc:
-            raise StageError(
-                "rife-ncnn-vulkan failed",
-                context={"stderr_tail": exc.result.stderr[-2000:]},
-            ) from exc
-        except ProcInterrupted as exc:
-            if exc.reason == "cancel":
-                raise CancelledError("cancelled during interpolation") from exc
-            raise PausedError("paused during interpolation") from exc
+        last_stderr = ""
+        for attempt in range(1, _MAX_RIFE_GPU_FAULT_ATTEMPTS + 1):
+            if attempt > 1:
+                empty_dir(output_dir)
+            gpu_fault_seen: list[bool] = [False]
+            stderr_lines: list[str] = []
+
+            def should_interrupt(
+                _gpu_fault_seen: list[bool] = gpu_fault_seen,
+            ) -> str | None:
+                if ctx.cancel_event.is_set():
+                    return "cancel"
+                if ctx.pause_event.is_set():
+                    return "pause"
+                if _gpu_fault_seen[0]:
+                    return "gpu_fault"
+                return None
+
+            try:
+                for stream, line in run_streaming(argv, should_interrupt=should_interrupt):
+                    if stream == "stderr":
+                        stderr_lines.append(line)
+                        if stderr_indicates_vulkan_gpu_fault(line):
+                            gpu_fault_seen[0] = True
+                        if line.strip():
+                            events.emit(
+                                StageEvent(ctx.job_id, self.name, "log", message=line.strip()),
+                            )
+            except ProcError as exc:
+                last_stderr = exc.result.stderr
+                if (
+                    stderr_indicates_vulkan_gpu_fault(last_stderr)
+                    and attempt < _MAX_RIFE_GPU_FAULT_ATTEMPTS
+                ):
+                    events.emit(StageEvent(
+                        ctx.job_id, self.name, "log",
+                        message=(
+                            f"Vulkan GPU fault during RIFE (attempt {attempt}/"
+                            f"{_MAX_RIFE_GPU_FAULT_ATTEMPTS}); retrying interpolation"
+                        ),
+                    ))
+                    continue
+                raise StageError(
+                    "rife-ncnn-vulkan failed",
+                    context={"stderr_tail": last_stderr[-2000:], "attempt": attempt},
+                ) from exc
+            except ProcInterrupted as exc:
+                if exc.reason == "cancel":
+                    raise CancelledError("cancelled during interpolation") from exc
+                if exc.reason == "pause":
+                    raise PausedError("paused during interpolation") from exc
+                if exc.reason == "gpu_fault":
+                    last_stderr = exc.result.stderr
+                    if attempt < _MAX_RIFE_GPU_FAULT_ATTEMPTS:
+                        events.emit(StageEvent(
+                            ctx.job_id, self.name, "log",
+                            message=(
+                                f"Vulkan GPU fault during RIFE (attempt {attempt}/"
+                                f"{_MAX_RIFE_GPU_FAULT_ATTEMPTS}); retrying interpolation"
+                            ),
+                        ))
+                        continue
+                    raise StageError(
+                        "rife-ncnn-vulkan: Vulkan GPU fault persisted after retries",
+                        context={
+                            "stderr_tail": last_stderr[-2000:],
+                            "attempts": attempt,
+                        },
+                    ) from exc
+                raise StageError(
+                    f"rife-ncnn-vulkan interrupted ({exc.reason})",
+                    context={"stderr_tail": exc.result.stderr[-2000:]},
+                ) from exc
+
+            last_stderr = "".join(stderr_lines)
+            if stderr_indicates_vulkan_gpu_fault(last_stderr):
+                if attempt < _MAX_RIFE_GPU_FAULT_ATTEMPTS:
+                    events.emit(StageEvent(
+                        ctx.job_id, self.name, "log",
+                        message=(
+                            f"Vulkan GPU fault during RIFE (attempt {attempt}/"
+                            f"{_MAX_RIFE_GPU_FAULT_ATTEMPTS}); retrying interpolation"
+                        ),
+                    ))
+                    continue
+                raise StageError(
+                    "rife-ncnn-vulkan: Vulkan GPU fault persisted after retries",
+                    context={
+                        "stderr_tail": last_stderr[-2000:],
+                        "attempts": attempt,
+                    },
+                )
+            return
 

@@ -67,6 +67,26 @@ def stderr_indicates_oom(stderr: str) -> bool:
     return any(p.search(stderr) for p in _OOM_PATTERNS)
 
 
+# --- Vulkan GPU fault detection ------------------------------------------
+#
+# Under cumulative driver/GPU state pressure (common on long batched RIFE runs
+# on Windows) the ncnn binaries may log ``vkQueueSubmit failed -4`` (device
+# lost) while continuing to emit frames — some of which are black/corrupt.
+# The process often never exits non-zero, so stages must watch stderr and
+# terminate + retry rather than trusting the exit code alone.
+
+_VULKAN_GPU_FAULT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"vkQueueSubmit\s+failed", re.IGNORECASE),
+    re.compile(r"VK_ERROR_DEVICE_LOST", re.IGNORECASE),
+    re.compile(r"vkDeviceWaitIdle\s+failed", re.IGNORECASE),
+    re.compile(r"vkAcquireNextImageKHR\s+failed", re.IGNORECASE),
+)
+
+
+def stderr_indicates_vulkan_gpu_fault(stderr: str) -> bool:
+    return any(p.search(stderr) for p in _VULKAN_GPU_FAULT_PATTERNS)
+
+
 # --- tile hint persistence -----------------------------------------------
 #
 # We persist (hardware_fp, tool_id, model_id, source_height) → known_good_tile

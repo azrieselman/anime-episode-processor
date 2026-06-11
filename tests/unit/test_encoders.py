@@ -123,14 +123,53 @@ def test_amf_vbr_emits_maxrate_and_bufsize() -> None:
     cfg = EncoderCfg(  # type: ignore[arg-type]
         name="hevc_amf",
         amf_rc="vbr_peak",
+        amf_bitrate=6_000_000,
         amf_maxrate=8_000_000,
         amf_bufsize=8_000_000,
     )
     r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
     joined = " ".join(r.args)
+    assert "-b:v 6000000" in joined
     assert "-maxrate 8000000" in joined
     assert "-bufsize 8000000" in joined
     assert "-qp_i" not in joined
+
+
+def test_amf_vbr_skips_b_v_when_zero() -> None:
+    cfg = EncoderCfg(  # type: ignore[arg-type]
+        name="hevc_amf",
+        amf_rc="vbr_peak",
+        amf_bitrate=0,
+    )
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    joined = " ".join(r.args)
+    assert "-b:v" not in joined
+
+
+def test_nvenc_vbr_emits_configurable_bitrate() -> None:
+    cfg = EncoderCfg(  # type: ignore[arg-type]
+        name="hevc_nvenc",
+        nvenc_rc="vbr",
+        nvenc_bitrate=10_000_000,
+    )
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    joined = " ".join(r.args)
+    assert "-b:v 10000000" in joined
+
+
+def test_nvenc_vbr_default_bitrate_zero() -> None:
+    cfg = EncoderCfg(name="hevc_nvenc", nvenc_rc="vbr")  # type: ignore[arg-type]
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    joined = " ".join(r.args)
+    assert "-b:v 0" in joined
+
+
+def test_nvenc_non_vbr_uses_zero_bitrate() -> None:
+    cfg = EncoderCfg(name="hevc_nvenc", nvenc_rc="constqp", nvenc_bitrate=8_000_000)  # type: ignore[arg-type]
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    joined = " ".join(r.args)
+    assert "-b:v 0" in joined
+    assert "-b:v 8000000" not in joined
 
 
 def test_amf_vbr_emits_preencode_when_enabled() -> None:
@@ -236,8 +275,14 @@ def test_hevc_amf_auto_10bit_source_uses_p010le() -> None:
     assert "-pix_fmt p010le" in joined
     assert "-preanalysis false" in joined
     assert r.pix_fmt == "yuv420p10le"
+    vf_idx = r.args.index("-vf")
+    vf = r.args[vf_idx + 1]
+    assert "out_color_matrix=bt709" in vf
+    assert "out_range=tv" in vf
+    assert "format=p010le" in vf
     assert any("Main10" in note for note in r.rationale)
     assert any("preanalysis disabled" in note for note in r.rationale)
+    assert any("limited (tv)" in note for note in r.rationale)
 
 
 def test_hevc_amf_force_10_on_8bit_source() -> None:
@@ -245,6 +290,8 @@ def test_hevc_amf_force_10_on_8bit_source() -> None:
     r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
     joined = " ".join(r.args)
     assert "-pix_fmt p010le" in joined
+    vf_idx = r.args.index("-vf")
+    assert "out_range=tv" in r.args[vf_idx + 1]
     assert any("amf_bit_depth=10" in note for note in r.rationale)
 
 
@@ -282,8 +329,21 @@ def test_hevc_amf_10bit_scale_includes_format_p010le() -> None:
         cfg, target_width=1920, target_height=1080, source_pix_fmt="yuv420p10le",
     )
     vf_idx = r.args.index("-vf")
-    assert "format=p010le" in r.args[vf_idx + 1]
-    assert "scale=1920:1080" in r.args[vf_idx + 1]
+    vf = r.args[vf_idx + 1]
+    assert "format=p010le" in vf
+    assert "scale=1920:1080" in vf
+    assert "out_color_matrix=bt709" in vf
+    assert "out_range=tv" in vf
+
+
+def test_hevc_amf_10bit_emits_bt709_color_metadata() -> None:
+    cfg = EncoderCfg(name="hevc_amf", amf_bit_depth="10")  # type: ignore[arg-type]
+    r = build_encoder_args(cfg, target_width=None, target_height=None, source_pix_fmt="yuv420p")
+    joined = " ".join(r.args)
+    assert "-color_primaries bt709" in joined
+    assert "-color_trc bt709" in joined
+    assert "-colorspace bt709" in joined
+    assert "-color_range tv" in joined
 
 
 def test_hevc_amf_10bit_amf_hwaccel_uses_hwdownload() -> None:

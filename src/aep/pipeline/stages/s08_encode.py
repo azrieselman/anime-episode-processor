@@ -30,7 +30,7 @@ from aep.errors import CancelledError, EncodeError, PausedError, PipelineError
 from aep.persist.presets import EncoderCfg
 from aep.pipeline.cache import compute_cache_key
 from aep.pipeline.context import PipelineContext
-from aep.pipeline.events import EventSink, StageEvent
+from aep.pipeline.events import EventSink, StageEvent, emit_tool_log
 from aep.pipeline.stage import BaseStage, StagePlan, StageResult
 from aep.util.proc import ProcError, ProcInterrupted, ProcResult, run_capture, run_streaming
 
@@ -316,6 +316,8 @@ class EncodeStage(BaseStage):
                                 message=line,
                                 extra={"ffmpeg_line": line},
                             ))
+                        elif logging.getLogger().isEnabledFor(logging.DEBUG):
+                            emit_tool_log(events, ctx.job_id, self.name, line)
                 result = ProcResult([str(c) for c in cmd], 0, "", "\n".join(stderr_lines))
             except ProcError as exc:
                 fallback_modes = decode_hwaccel_fallback_chain(decode_hwaccel)

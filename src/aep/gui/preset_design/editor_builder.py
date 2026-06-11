@@ -37,7 +37,7 @@ from aep.gui.preset_design.schema_reflect import (
     literal_choices,
     strip_optional,
 )
-from aep.persist.presets import Preset, TargetResolution, amf_rc_matches_when
+from aep.persist.presets import Preset, TargetResolution, encoder_rc_matches_when
 
 _CATEGORY_ORDER = [
     "meta",
@@ -498,12 +498,15 @@ def _build_encoding_tab(
     visibility_rows: list[FieldRow] = []
     family_picker: EncoderNamePicker | None = None
     amf_rc_combo: QComboBox | None = None
+    nvenc_rc_combo: QComboBox | None = None
 
     for row in rows:
         if row.path == ("encoder", "name") and isinstance(row.widget, EncoderNamePicker):
             family_picker = row.widget
         if row.path == ("encoder", "amf_rc") and isinstance(row.widget, QComboBox):
             amf_rc_combo = row.widget
+        if row.path == ("encoder", "nvenc_rc") and isinstance(row.widget, QComboBox):
+            nvenc_rc_combo = row.widget
 
     if family_picker is None:
         for row in rows:
@@ -559,7 +562,11 @@ def _build_encoding_tab(
 
     def _sync_visibility() -> None:
         active = family_picker.active_family() if family_picker is not None else "all"
-        current_rc = str(amf_rc_combo.currentData() or "") if amf_rc_combo is not None else ""
+        current_rc = ""
+        if active == "amf" and amf_rc_combo is not None:
+            current_rc = str(amf_rc_combo.currentData() or "")
+        elif active == "nvenc" and nvenc_rc_combo is not None:
+            current_rc = str(nvenc_rc_combo.currentData() or "")
         amf_codec = ""
         if family_picker is not None and active == "amf":
             amf_codec = str(family_picker._codec.currentData() or "")
@@ -569,7 +576,7 @@ def _build_encoding_tab(
             if target == "software":
                 visible = active == "software"
             if visible and row.when_rc:
-                visible = amf_rc_matches_when(row.when_rc, current_rc)
+                visible = encoder_rc_matches_when(row.when_rc, active, current_rc)
             if row.path == ("encoder", "amf_bit_depth"):
                 visible = visible and active == "amf" and amf_codec in {"hevc", "av1"}
             row.label.setVisible(visible)
@@ -580,6 +587,8 @@ def _build_encoding_tab(
         on_encoder_family_changed.append(_sync_visibility)
     if amf_rc_combo is not None:
         amf_rc_combo.currentIndexChanged.connect(lambda _i=0: _sync_visibility())
+    if nvenc_rc_combo is not None:
+        nvenc_rc_combo.currentIndexChanged.connect(lambda _i=0: _sync_visibility())
     _sync_visibility()
 
     vl.addStretch(1)
