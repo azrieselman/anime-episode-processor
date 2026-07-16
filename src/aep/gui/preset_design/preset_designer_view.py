@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from pydantic import ValidationError
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,

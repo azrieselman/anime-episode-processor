@@ -10,7 +10,7 @@ from typing import Any, get_args, get_origin
 import annotated_types as at
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
-from PySide6.QtCore import Qt, QSignalBlocker
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
