@@ -4,8 +4,8 @@ Layout:
 +----------------------------------------------------+
 | File  Tools  Help                                   |
 +----------------------------------------------------+
-| [Queue] [Job Config] [Stream Inspector]            |
-| [Presets] [Logs] [Settings]                        |
+| [Queue] [Stream Inspector] [Presets]               |
+| [Benchmark] [Logs] [RamDisk] [Settings]            |
 +--------+-------------------------------------------+
 | Stack of views (driven by the side rail)           |
 +--------+-------------------------------------------+
@@ -29,6 +29,7 @@ from functools import partial
 from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QStyle,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -56,7 +58,6 @@ from aep.constants import (
 from aep.gui import theme
 from aep.gui.preset_design import PresetDesignerView
 from aep.gui.views.benchmark_view import BenchmarkView
-from aep.gui.views.job_config_view import JobConfigView
 from aep.gui.views.logs_view import LogsView
 from aep.gui.views.queue_view import QueueView
 from aep.gui.views.ramdisk_view import RamDiskView
@@ -159,12 +160,12 @@ class MainWindow(QMainWindow):
         about_act.triggered.connect(self._on_about)
         help_menu.addAction(about_act)
 
-        # Ctrl+1 … Ctrl+8 — switch primary views (sidebar order).
-        for i in range(8):
+        # Ctrl+1 … Ctrl+7 — switch views by stack index (skips sidebar separator).
+        for i in range(7):
             act = QAction(self)
             act.setShortcut(QKeySequence(f"Ctrl+{i + 1}"))
             act.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-            act.triggered.connect(partial(self._select_sidebar_row, i))
+            act.triggered.connect(partial(self._select_stack_index, i))
             self.addAction(act)
 
     def _build_central(self) -> None:
@@ -173,17 +174,50 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._sidebar = QListWidget(central)
-        self._sidebar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self._sidebar.setFixedWidth(220)
+        rail = QWidget(central)
+        rail.setObjectName("sidebarRail")
+        rail.setFixedWidth(220)
+        rail.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        rail_layout = QVBoxLayout(rail)
+        rail_layout.setContentsMargins(0, 0, 0, 0)
+        rail_layout.setSpacing(0)
+
+        brand = QFrame(rail)
+        brand.setObjectName("sidebarBrandFrame")
+        brand_outer = QVBoxLayout(brand)
+        brand_outer.setContentsMargins(12, 14, 12, 14)
+        brand_outer.setSpacing(0)
+
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(10)
+        brand_row.setContentsMargins(0, 0, 0, 0)
+        brand_icon = QLabel(brand)
+        brand_icon.setPixmap(theme.load_window_icon().pixmap(QSize(48, 48)))
+        brand_icon.setFixedSize(QSize(48, 48))
+        brand_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand_row.addWidget(brand_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        brand_label = QLabel("Anime\nEpisode\nProcessor", brand)
+        brand_label.setObjectName("sidebarBrand")
+        brand_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        brand_row.addWidget(brand_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        brand_outer.addLayout(brand_row, stretch=0)
+        brand_outer.setAlignment(brand_row, Qt.AlignmentFlag.AlignHCenter)
+        rail_layout.addWidget(brand)
+
+        self._sidebar = QListWidget(rail)
+        self._sidebar.setObjectName("navSidebar")
+        self._sidebar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._sidebar.setSpacing(2)
         self._sidebar.setIconSize(QSize(20, 20))
         self._sidebar.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        rail_layout.addWidget(self._sidebar, 1)
 
         self._stack = QStackedWidget(central)
+        # Sidebar row → stack index (1:1; no spacer rows).
+        self._sidebar_stack_map: list[int | None] = []
 
         self._queue_view = QueueView(self._services, parent=self)
-        self._job_config_view = JobConfigView(self._services, parent=self)
         self._inspector_view = StreamInspectorView(self._services, parent=self)
         self._preset_designer_view = PresetDesignerView(self._services, parent=self)
         self._benchmark_view = BenchmarkView(self._services, parent=self)
@@ -197,24 +231,36 @@ class MainWindow(QMainWindow):
         style = self.style()
         nav: list[tuple[str, QWidget, str, QStyle.StandardPixmap]] = [
             ("Queue", self._queue_view, "queue", QStyle.StandardPixmap.SP_DirOpenIcon),
-            ("Job Config", self._job_config_view, "job-config", QStyle.StandardPixmap.SP_FileDialogDetailedView),
-            ("Stream Inspector", self._inspector_view, "stream-inspector", QStyle.StandardPixmap.SP_FileDialogInfoView),
-            ("Preset Designer", self._preset_designer_view, "preset-designer", QStyle.StandardPixmap.SP_FileIcon),
+            (
+                "Stream Inspector",
+                self._inspector_view,
+                "stream-inspector",
+                QStyle.StandardPixmap.SP_FileDialogInfoView,
+            ),
+            (
+                "Preset Designer",
+                self._preset_designer_view,
+                "preset-designer",
+                QStyle.StandardPixmap.SP_FileIcon,
+            ),
             ("Benchmark", self._benchmark_view, "benchmark", QStyle.StandardPixmap.SP_ComputerIcon),
             ("Logs", self._logs_view, "logs", QStyle.StandardPixmap.SP_FileDialogContentsView),
             ("RamDisk", self._ramdisk_view, "ramdisk", QStyle.StandardPixmap.SP_DriveHDIcon),
             ("Settings", self._settings_view, "settings", QStyle.StandardPixmap.SP_FileDialogListView),
         ]
+
         for label, widget, slug, spix in nav:
             custom = theme.load_sidebar_nav_icon(slug)
             icon = custom if custom is not None else style.standardIcon(spix)
             QListWidgetItem(icon, label, self._sidebar)
+            stack_idx = self._stack.count()
             self._stack.addWidget(widget)
+            self._sidebar_stack_map.append(stack_idx)
 
-        self._sidebar.currentRowChanged.connect(self._stack.setCurrentIndex)
+        self._sidebar.currentRowChanged.connect(self._on_sidebar_row_changed)
         self._sidebar.setCurrentRow(0)
 
-        root.addWidget(self._sidebar)
+        root.addWidget(rail)
         root.addWidget(self._stack, 1)
         self.setCentralWidget(central)
 
@@ -231,9 +277,28 @@ class MainWindow(QMainWindow):
 
     # ----- handlers -------------------------------------------------
 
-    def _select_sidebar_row(self, row: int) -> None:
-        if 0 <= row < self._sidebar.count():
-            self._sidebar.setCurrentRow(row)
+    def _on_sidebar_row_changed(self, row: int) -> None:
+        if row < 0 or row >= len(self._sidebar_stack_map):
+            return
+        stack_idx = self._sidebar_stack_map[row]
+        if stack_idx is None:
+            # Separator clicked (shouldn't normally happen); snap back.
+            prev = self._stack.currentIndex()
+            for i, mapped in enumerate(self._sidebar_stack_map):
+                if mapped == prev:
+                    self._sidebar.blockSignals(True)
+                    self._sidebar.setCurrentRow(i)
+                    self._sidebar.blockSignals(False)
+                    return
+            return
+        self._stack.setCurrentIndex(stack_idx)
+
+    def _select_stack_index(self, stack_idx: int) -> None:
+        """Select the sidebar row that maps to ``stack_idx`` (Ctrl+1…Ctrl+7)."""
+        for row, mapped in enumerate(self._sidebar_stack_map):
+            if mapped == stack_idx:
+                self._sidebar.setCurrentRow(row)
+                return
 
     def _sync_tools_warning_banner(self) -> None:
         try:
@@ -496,7 +561,6 @@ class MainWindow(QMainWindow):
         )
 
     def _on_job_selected(self, job_id: str | None) -> None:
-        self._job_config_view.set_job(job_id)
         self._inspector_view.set_job(job_id)
 
     def _update_status(self, queued: int, running: int, completed: int, failed: int) -> None:

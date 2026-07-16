@@ -42,9 +42,12 @@ COLUMNS = ["File", "Job ID", "Preset", "State", "Stage", "Batches", "Runtime", "
 
 _FILE_SORT_MODE = Literal["queue", "name_asc", "name_desc"]
 
+# Fixed widths for non-stretch columns. Error (last) uses Stretch and fills
+# remaining header space so the table tracks window resizes.
 _DEFAULT_COLUMN_WIDTHS = [280, 240, 140, 88, 140, 88, 88, 220]
 
 _COL_JOB_ID = 1
+_COL_ERROR = 7
 
 # After Pause, wait until workers leave RUNNING before showing the idle banner.
 _PAUSE_COMPLETION_POLL_MS = 150
@@ -125,7 +128,7 @@ class QueueView(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
+        root.setContentsMargins(12, 12, 12, 4)
         root.setSpacing(8)
 
         root.addWidget(theme.make_page_title_label("Queue", self))
@@ -134,6 +137,7 @@ class QueueView(QWidget):
         self._drop.paths_dropped.connect(self._on_paths_dropped)
         root.addWidget(self._drop)
 
+        # Single toolbar: add sources | selection actions | preset | bulk + Start/Pause
         toolbar = QHBoxLayout()
         toolbar.setSpacing(8)
         self._add_files_btn = QPushButton("Add Files…")
@@ -143,49 +147,50 @@ class QueueView(QWidget):
         toolbar.addWidget(self._add_files_btn)
         toolbar.addWidget(self._add_folder_btn)
 
-        toolbar.addSpacing(16)
-        toolbar.addWidget(QLabel("Preset for new jobs:"))
-        self._preset_combo = QComboBox()
-        self._reload_presets()
-        toolbar.addWidget(self._preset_combo)
-
-        toolbar.addStretch(1)
-
-        # Single Start/Pause control: toggles queue dispatch and pauses or
-        # resumes every in-flight job (running workers hold pipeline contexts).
-        self._queue_toggle_btn = QPushButton("Start")
-        self._queue_toggle_btn.setStyleSheet("font-weight: 600;")
-        self._queue_toggle_btn.clicked.connect(self._on_queue_toggle_clicked)
-        toolbar.addWidget(self._queue_toggle_btn)
         toolbar.addSpacing(12)
-
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self._on_cancel_clicked)
         self._resume_btn = QPushButton("Resume")
         self._resume_btn.clicked.connect(self._on_resume_clicked)
         self._remove_btn = QPushButton("Remove")
         self._remove_btn.clicked.connect(self._on_remove_clicked)
-        self._clear_queue_btn = QPushButton("Clear Queue…")
-        self._clear_queue_btn.clicked.connect(self._on_clear_queue_clicked)
-        self._retry_btn = QPushButton("Retry Failed")
-        self._retry_btn.clicked.connect(self._on_retry_clicked)
-        for b in (
-            self._cancel_btn,
-            self._resume_btn,
-            self._retry_btn,
-            self._remove_btn,
-            self._clear_queue_btn,
-        ):
+        for b in (self._cancel_btn, self._resume_btn, self._remove_btn):
             toolbar.addWidget(b)
 
+        toolbar.addSpacing(12)
+        preset_lbl = QLabel("Preset:")
+        theme.style_muted_detail_label(preset_lbl)
+        toolbar.addWidget(preset_lbl)
+        self._preset_combo = QComboBox()
+        self._preset_combo.setMinimumWidth(180)
+        self._reload_presets()
+        toolbar.addWidget(self._preset_combo)
+
+        toolbar.addStretch(1)
+
+        self._retry_btn = QPushButton("Retry Failed")
+        self._retry_btn.clicked.connect(self._on_retry_clicked)
+        self._clear_queue_btn = QPushButton("Clear Queue…")
+        self._clear_queue_btn.clicked.connect(self._on_clear_queue_clicked)
+        toolbar.addWidget(self._retry_btn)
+        toolbar.addWidget(self._clear_queue_btn)
+
+        self._queue_toggle_btn = QPushButton("Start")
+        self._queue_toggle_btn.setObjectName("primaryButton")
+        self._queue_toggle_btn.clicked.connect(self._on_queue_toggle_clicked)
+        toolbar.addWidget(self._queue_toggle_btn)
         root.addLayout(toolbar)
 
         # Status line under the toolbar shows whether dispatch is paused.
-        # We keep it minimal to avoid stealing vertical space from the table.
         self._queue_status_label = QLabel("")
         theme.style_attention_status_label(self._queue_status_label, italic=True)
         root.addWidget(self._queue_status_label)
         self._refresh_queue_toggle()
+
+        self._selection_cue = QLabel("")
+        self._selection_cue.setWordWrap(True)
+        theme.style_muted_detail_label(self._selection_cue, small=True)
+        root.addWidget(self._selection_cue)
 
         self._table = QTableWidget(0, len(COLUMNS), self)
         self._table.setHorizontalHeaderLabels(COLUMNS)
@@ -195,17 +200,24 @@ class QueueView(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._table.setSortingEnabled(False)
+        self._table.setAlternatingRowColors(True)
         h = self._table.horizontalHeader()
-        h.setStretchLastSection(False)
+        h.setStretchLastSection(True)
         for col in range(len(COLUMNS)):
-            h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            if col == _COL_ERROR:
+                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+            else:
+                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
         for col, w in enumerate(_DEFAULT_COLUMN_WIDTHS):
-            h.resizeSection(col, w)
+            if col != _COL_ERROR:
+                h.resizeSection(col, w)
         h.sectionClicked.connect(self._on_queue_header_section_clicked)
         self._update_file_sort_indicator()
         self._sync_job_id_column_visibility()
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
         root.addWidget(self._table, 1)
+        self._update_selection_actions()
+
 
     def reload_presets(self) -> None:
         """Refresh preset combo from disk (e.g. after Preset Designer save)."""
@@ -350,6 +362,39 @@ class QueueView(QWidget):
             counts.get(JobState.FAILED, 0),
         )
         self._clear_queue_btn.setEnabled(len(jobs) > 0)
+        self._drop.set_empty_emphasis(len(jobs) == 0)
+        self._update_selection_actions()
+
+    def _update_selection_actions(self) -> None:
+        """Enable selection-scoped buttons and refresh the inspector cue line."""
+        jid = self._current_selected_job_id()
+        job = self._services.jobs.get(jid) if jid else None
+        if job is None:
+            self._cancel_btn.setEnabled(False)
+            self._resume_btn.setEnabled(False)
+            self._remove_btn.setEnabled(False)
+            self._retry_btn.setEnabled(False)
+            if self._table.rowCount() == 0:
+                self._selection_cue.clear()
+                self._selection_cue.setVisible(False)
+            else:
+                self._selection_cue.setText(
+                    "Select a job for Cancel / Resume / Remove, or open Stream Inspector for probe details."
+                )
+                self._selection_cue.setVisible(True)
+            return
+
+        self._cancel_btn.setEnabled(
+            job.state in (JobState.QUEUED, JobState.RUNNING, JobState.PAUSED)
+        )
+        self._resume_btn.setEnabled(job.state == JobState.PAUSED)
+        self._remove_btn.setEnabled(True)
+        self._retry_btn.setEnabled(job.state == JobState.FAILED)
+        name = Path(job.source_path).name
+        self._selection_cue.setText(
+            f"Selected: {name} — open Stream Inspector for audio, subs, and chapters."
+        )
+        self._selection_cue.setVisible(True)
 
     def _ordered_jobs(self, jobs: list[Job]) -> list[Job]:
         if self._file_sort_mode == "queue":
@@ -425,6 +470,7 @@ class QueueView(QWidget):
 
     def _on_selection_changed(self) -> None:
         self.selection_changed.emit(self._current_selected_job_id())
+        self._update_selection_actions()
 
     def _on_cancel_clicked(self) -> None:
         jid = self._current_selected_job_id()
@@ -517,6 +563,7 @@ class QueueView(QWidget):
             if running_ids:
                 self._pause_watch_deadline = time.monotonic() + _PAUSE_COMPLETION_TIMEOUT_S
                 self._queue_toggle_btn.setEnabled(False)
+                self._queue_status_label.setVisible(True)
                 self._queue_status_label.setText(
                     "Pausing — waiting for workers to reach a safe stop…",
                 )
@@ -564,12 +611,15 @@ class QueueView(QWidget):
         queue_elapsed = self._format_elapsed(queue_elapsed_s)
         if paused:
             self._queue_toggle_btn.setText("Start")
+            # Attention banner only while paused (status bar already shows counts).
+            self._queue_status_label.setVisible(True)
             self._queue_status_label.setText(
                 f"Paused — active runtime {queue_elapsed}. Click Start to resume dispatch and workers.",
             )
         else:
             self._queue_toggle_btn.setText("Pause")
-            self._queue_status_label.setText(f"Running — active runtime {queue_elapsed}.")
+            self._queue_status_label.clear()
+            self._queue_status_label.setVisible(False)
 
     @staticmethod
     def _format_elapsed(seconds: float | None) -> str:

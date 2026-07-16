@@ -63,12 +63,15 @@ class StreamInspectorView(QWidget):
         head.addWidget(theme.make_page_title_label("Stream Inspector", self))
         head.addStretch(1)
         self._reanalyze_btn = QPushButton("Re-analyze")
+        self._reanalyze_btn.setObjectName("primaryButton")
+        self._reanalyze_btn.setEnabled(False)
         self._reanalyze_btn.clicked.connect(self._on_reanalyze)
         head.addWidget(self._reanalyze_btn)
         root.addLayout(head)
 
-        self._summary = QLabel("Select a job to inspect.")
+        self._summary = QLabel("Select a job in Queue first.")
         self._summary.setWordWrap(True)
+        theme.style_muted_detail_label(self._summary)
         root.addWidget(self._summary)
 
         self._tabs = QTabWidget()
@@ -117,14 +120,22 @@ class StreamInspectorView(QWidget):
         for j in self._services.jobs.list_jobs():
             if j.id != job_id:
                 continue
+            self._reanalyze_btn.setEnabled(True)
             if j.probe:
                 info = MediaInfo.model_validate(j.probe)
                 self._att_sizes = self._fetch_attachment_sizes(Path(j.source_path), info)
                 self._render(info)
             else:
-                self._summary.setText("No probe data yet — click Re-analyze.")
+                name = Path(j.source_path).name
+                self._summary.setText(
+                    f"Selected: {name} — no probe data yet. Click Re-analyze to inspect streams."
+                )
+                theme.style_muted_detail_label(self._summary)
                 self._clear_tables()
             return
+        self._clear()
+        self._summary.setText("Selected job is no longer in the queue.")
+        theme.style_muted_detail_label(self._summary)
 
     def _on_reanalyze(self) -> None:
         if not self._job_id:
@@ -139,10 +150,13 @@ class StreamInspectorView(QWidget):
                     self._render(info)
                 except Exception as exc:
                     self._summary.setText(f"Analysis failed: {exc}")
+                    theme.style_attention_status_label(self._summary)
                 return
 
     def _clear(self) -> None:
-        self._summary.setText("Select a job to inspect.")
+        self._reanalyze_btn.setEnabled(False)
+        self._summary.setText("Select a job in Queue first.")
+        theme.style_muted_detail_label(self._summary)
         self._clear_tables()
 
     def _clear_tables(self) -> None:
@@ -154,6 +168,7 @@ class StreamInspectorView(QWidget):
     def _render(self, info: MediaInfo) -> None:
         dur = info.fmt.duration_s or 0
         size_mb = (info.fmt.size_bytes or 0) / (1024 * 1024)
+        self._summary.setStyleSheet("")
         self._summary.setText(
             f"{info.fmt.format_name}  ·  {dur:.1f}s  ·  {size_mb:.1f} MB  ·  "
             f"video={len(info.video_streams)}  audio={len(info.audio_streams)}  "

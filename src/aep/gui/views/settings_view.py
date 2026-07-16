@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from aep.app.services import AppServices
 from aep.gui import theme
+from aep.gui.widgets.wheel_guard import disable_wheel_value_changes
 
 _TOOL_DIR_FIELDS: tuple[tuple[str, str], ...] = (
     ("ffmpeg_dir", "FFmpeg directory:"),
@@ -85,8 +87,17 @@ class SettingsView(QWidget):
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         root.addWidget(theme.make_page_title_label("Settings", self))
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 8, 0)
+        body_layout.setSpacing(8)
 
         general = QGroupBox("General")
         gf = QFormLayout(general)
@@ -125,7 +136,7 @@ class SettingsView(QWidget):
             "Display each job's internal ID in the Queue tab. Useful for logs and support."
         )
         gf.addRow("", self._show_queue_job_id)
-        root.addWidget(general)
+        body_layout.addWidget(general)
 
         hw = QGroupBox("Hardware")
         hf = QFormLayout(hw)
@@ -187,7 +198,7 @@ class SettingsView(QWidget):
             "RIFE -j thread split in load:process:save format, e.g. 10:10:10."
         )
         hf.addRow("RIFE threads (-j):", self._rife_threads)
-        root.addWidget(hw)
+        body_layout.addWidget(hw)
 
         pipeline = QGroupBox("Pipeline")
         plf = QFormLayout(pipeline)
@@ -205,11 +216,9 @@ class SettingsView(QWidget):
             "Interpolation first runs RIFE on smaller frames (usually faster)."
         )
         plf.addRow("NCNN frame stages:", self._pipeline_order)
-        root.addWidget(pipeline)
+        body_layout.addWidget(pipeline)
 
-        # ----- Paths group -----------------------------------------------
-        # Ramdisk + per-tool directory overrides. Empty values fall back to
-        # bundled tools (or to the workdir for ramdisk).
+        # Scratch path stays visible; tool dirs are collapsed by default.
         paths = QGroupBox("Paths")
         pf = QFormLayout(paths)
 
@@ -218,7 +227,6 @@ class SettingsView(QWidget):
         self._ramdisk_path.setPlaceholderText(
             "(leave blank to use the regular work directory)"
         )
-        # Refresh free-space hint as the user types or browses.
         self._ramdisk_path.textChanged.connect(self._refresh_ramdisk_free_space)
         rd_browse = QPushButton("Browse…")
         rd_browse.clicked.connect(self._browse_ramdisk)
@@ -228,10 +236,22 @@ class SettingsView(QWidget):
         self._ramdisk_free_label = QLabel("")
         theme.style_muted_detail_label(self._ramdisk_free_label, small=True)
         pf.addRow("", self._ramdisk_free_label)
+        body_layout.addWidget(paths)
 
-        # 6 tool-dir overrides — each gets a Browse button. Stored on self
-        # under names matching PathSettings field names so _load/_save can
-        # iterate _TOOL_DIR_FIELDS uniformly without per-field scaffolding.
+        self._tool_paths_toggle = QPushButton("Show tool paths…")
+        self._tool_paths_toggle.setCheckable(True)
+        self._tool_paths_toggle.setChecked(False)
+        self._tool_paths_toggle.toggled.connect(self._on_tool_paths_toggled)
+        body_layout.addWidget(self._tool_paths_toggle)
+
+        self._tool_paths_group = QGroupBox("Tool paths")
+        self._tool_paths_group.setVisible(False)
+        tpf = QFormLayout(self._tool_paths_group)
+        hint = QLabel("Blank fields use the bundled tools under your AEP tools directory.")
+        theme.style_muted_detail_label(hint, small=True)
+        hint.setWordWrap(True)
+        tpf.addRow(hint)
+
         self._tool_dir_edits: dict[str, QLineEdit] = {}
         for attr, label in _TOOL_DIR_FIELDS:
             row = QHBoxLayout()
@@ -243,20 +263,31 @@ class SettingsView(QWidget):
             )
             row.addWidget(edit, 1)
             row.addWidget(browse_btn)
-            pf.addRow(label, row)
+            tpf.addRow(label, row)
             self._tool_dir_edits[attr] = edit
-        root.addWidget(paths)
+        body_layout.addWidget(self._tool_paths_group)
+        body_layout.addStretch(1)
+
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
 
         btns = QHBoxLayout()
         btns.addStretch(1)
         self._save_btn = QPushButton("Save")
+        self._save_btn.setObjectName("primaryButton")
         self._save_btn.clicked.connect(self._save)
         self._reset_btn = QPushButton("Reset to defaults")
         self._reset_btn.clicked.connect(self._reset)
         btns.addWidget(self._reset_btn)
         btns.addWidget(self._save_btn)
         root.addLayout(btns)
-        root.addStretch(1)
+        disable_wheel_value_changes(self)
+
+    def _on_tool_paths_toggled(self, checked: bool) -> None:
+        self._tool_paths_group.setVisible(checked)
+        self._tool_paths_toggle.setText(
+            "Hide tool paths" if checked else "Show tool paths…"
+        )
 
     def _browse_output(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Choose default output directory")

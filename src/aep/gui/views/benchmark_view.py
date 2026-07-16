@@ -89,11 +89,15 @@ class BenchmarkView(QWidget):
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         root.addWidget(theme.make_page_title_label("Benchmark", self))
         self._vmaf_banner = QLabel("")
         theme.style_muted_detail_label(self._vmaf_banner, small=True)
         root.addWidget(self._vmaf_banner)
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
 
         input_group = QGroupBox("Input")
         input_form = QFormLayout(input_group)
@@ -118,7 +122,7 @@ class BenchmarkView(QWidget):
         self._duration_spin.setValue(30.0)
         self._duration_spin.setSuffix(" s")
         input_form.addRow("Segment duration:", self._duration_spin)
-        root.addWidget(input_group)
+        top.addWidget(input_group, 1)
 
         config_group = QGroupBox("Configuration")
         config_form = QFormLayout(config_group)
@@ -134,10 +138,12 @@ class BenchmarkView(QWidget):
         self._compute_vmaf = QCheckBox("Compute VMAF for encoded segment")
         self._compute_vmaf.setChecked(True)
         config_form.addRow("", self._compute_vmaf)
-        root.addWidget(config_group)
+        top.addWidget(config_group, 1)
+        root.addLayout(top)
 
         actions = QHBoxLayout()
         self._run_btn = QPushButton("Run Benchmark")
+        self._run_btn.setObjectName("primaryButton")
         self._run_btn.clicked.connect(self._run_benchmark)
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self._cancel_benchmark)
@@ -162,8 +168,15 @@ class BenchmarkView(QWidget):
         self._tabs.addTab(self._build_ffmpeg_log_tab(), "FFmpeg Log")
         root.addWidget(self._tabs, 1)
 
-        recent_group = QGroupBox("Recent Runs (session)")
-        recent_layout = QVBoxLayout(recent_group)
+        self._recent_toggle = QPushButton("Show recent runs")
+        self._recent_toggle.setCheckable(True)
+        self._recent_toggle.setChecked(False)
+        self._recent_toggle.toggled.connect(self._on_recent_toggled)
+        root.addWidget(self._recent_toggle)
+
+        self._recent_group = QGroupBox("Recent Runs (session)")
+        self._recent_group.setVisible(False)
+        recent_layout = QVBoxLayout(self._recent_group)
         self._recent_table = QTableWidget(0, 6)
         self._recent_table.setHorizontalHeaderLabels(
             ["Run ID", "Preset", "Scope", "Duration (s)", "VMAF", "Proc Wall (s)"],
@@ -171,6 +184,7 @@ class BenchmarkView(QWidget):
         self._recent_table.verticalHeader().setVisible(False)
         self._recent_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._recent_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._recent_table.setMaximumHeight(140)
         self._recent_table.itemSelectionChanged.connect(self._update_delete_run_btn)
         recent_layout.addWidget(self._recent_table)
         recent_actions = QHBoxLayout()
@@ -180,7 +194,11 @@ class BenchmarkView(QWidget):
         recent_actions.addStretch(1)
         recent_actions.addWidget(self._delete_run_btn)
         recent_layout.addLayout(recent_actions)
-        root.addWidget(recent_group)
+        root.addWidget(self._recent_group)
+
+    def _on_recent_toggled(self, checked: bool) -> None:
+        self._recent_group.setVisible(checked)
+        self._recent_toggle.setText("Hide recent runs" if checked else "Show recent runs")
 
     def _build_summary_tab(self) -> QWidget:
         w = QWidget()

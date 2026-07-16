@@ -9,6 +9,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 
+from aep.gui import theme
+
 VIDEO_SUFFIXES = {".mkv", ".mp4", ".m4v", ".webm", ".avi", ".mov", ".ts", ".m2ts"}
 
 
@@ -33,10 +35,7 @@ class DropArea(QFrame):
         self.setObjectName("dropArea")
         self.setAcceptDrops(True)
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet(
-            "QFrame#dropArea { border: 2px dashed palette(mid); border-radius: 8px; }"
-            "QFrame#dropArea[drag=true] { border-color: palette(highlight); }"
-        )
+        self.setStyleSheet(theme.drop_area_stylesheet())
         self.setMinimumHeight(72)
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -45,7 +44,23 @@ class DropArea(QFrame):
             "(.mkv, .mp4, .webm, etc.) — folders are scanned recursively"
         )
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setObjectName("dropAreaLabel")
         layout.addWidget(self._label)
+
+    def set_empty_emphasis(self, empty: bool) -> None:
+        """When the queue is empty, make the drop zone the primary call to action."""
+        if empty:
+            self._label.setText(
+                "Drop video files or folders to get started\n"
+                "(.mkv, .mp4, .webm, etc.) — or use Add Files / Add Folder below"
+            )
+            self.setMinimumHeight(96)
+        else:
+            self._label.setText(
+                "Drop video files or folders here\n"
+                "(.mkv, .mp4, .webm, etc.) — folders are scanned recursively"
+            )
+            self.setMinimumHeight(72)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():

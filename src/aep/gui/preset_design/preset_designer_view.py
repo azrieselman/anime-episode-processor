@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from pydantic import ValidationError
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -44,6 +44,7 @@ class PresetDesignerView(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         head = QHBoxLayout()
         head.addWidget(theme.make_page_title_label("Preset Designer", self))
@@ -54,6 +55,7 @@ class PresetDesignerView(QWidget):
         head.addWidget(self._reload_btn)
 
         self._save_btn = QPushButton("Save")
+        self._save_btn.setObjectName("primaryButton")
         self._save_btn.clicked.connect(self._on_save)
         head.addWidget(self._save_btn)
 
@@ -86,15 +88,24 @@ class PresetDesignerView(QWidget):
         root.addWidget(self._validation_label)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
         self._list = QListWidget()
+        self._list.setObjectName("presetList")
+        self._list.setMinimumWidth(200)
+        # Layout gap between rows — QSS margin/padding alone often paints hover
+        # rects larger than the item slot, so highlights bleed into neighbors.
+        self._list.setSpacing(6)
         self._list.currentItemChanged.connect(self._on_select)
         splitter.addWidget(self._list)
 
         self._editor_wrap = QWidget()
+        self._editor_wrap.setObjectName("presetEditorRoot")
         self._editor_layout = QVBoxLayout(self._editor_wrap)
-        self._editor_layout.setContentsMargins(0, 0, 0, 0)
+        self._editor_layout.setContentsMargins(8, 0, 0, 0)
         splitter.addWidget(self._editor_wrap)
-        splitter.setSizes([280, 820])
+        splitter.setSizes([260, 840])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, 1)
 
         editor_root, self._bindings, self._refresh_editor_visibility = build_preset_editor(
@@ -117,6 +128,8 @@ class PresetDesignerView(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, p.meta.id)
             item.setToolTip(p.meta.description)
+            # Explicit height so hover/selection backgrounds stay inside the row slot.
+            item.setSizeHint(QSize(0, 34))
             self._list.addItem(item)
         self._list.blockSignals(False)
         if sel:

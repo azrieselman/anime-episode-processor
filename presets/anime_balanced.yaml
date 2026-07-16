@@ -3,7 +3,7 @@ meta:
   name: Anime Balanced 1440p
   description: >
     Default preset with strong line-art fidelity and balanced speed.
-    Anime4K ACNet F8B8 HDN 2x plus RIFE v4.25-lite 2x interpolation, tuned
+    Anime4K ARTCNN 2x plus RIFE v4.25 2x interpolation, tuned
     with parity settings for NVENC, QSV, and AMF paths.
   builtin: true
   suitable_for: [anime_2d, anime_compressed]
@@ -16,7 +16,7 @@ target_resolution:
   height: null
 upscaler:
   engine: anime4kcpp
-  model: arnet-f8b8-hdn
+  model: artcnn-c4f32
   scale: 2
   denoise: 1
   tile_size: 256
@@ -28,7 +28,7 @@ upscaler:
 interpolation:
   enabled: true
   engine: rife-ncnn-vulkan
-  version: v4.25-lite
+  version: v4.25
   target_fps: null
   multiplier: 2
   scene_cut_threshold: 0.35
@@ -36,13 +36,15 @@ interpolation:
   fp16: true
   scene_detect_backend: ffmpeg_scdet
   scene_change_threshold_percent: 35.0
+  ffmpeg_scdet_scale_width: 320
 encoder:
-  name: hevc_nvenc
+  name: hevc_amf
   goal: auto
   nvenc_preset: p6
   nvenc_tune: hq
   nvenc_rc: vbr
   nvenc_cq: 19
+  nvenc_bitrate: 0
   nvenc_multipass: qres
   nvenc_rc_lookahead: 32
   nvenc_spatial_aq: true
@@ -55,14 +57,27 @@ encoder:
   qsv_look_ahead_depth: 40
   qsv_bf: 3
   qsv_low_power: false
+  amf_bit_depth: '8'
   amf_quality: quality
-  amf_rc: cqp
+  amf_rc: vbr_peak
   amf_qp_i: 19
   amf_qp_p: 19
   amf_qp_b: 20
+  amf_bitrate: 10000000
+  amf_maxrate: 20000000
+  amf_bufsize: 40000000
   amf_preanalysis: true
   amf_vbaq: false
-  amf_g: 250
+  amf_preencode: true
+  amf_g: 0
+  amf_bf: 3
+  amf_pa_lookahead_buffer_depth: -1
+  amf_pa_taq_mode: -1
+  d3d12_qp: 21
+  d3d12_quality: -1
+  vulkan_qp: 21
+  vulkan_quality: -1
+  vulkan_async_depth: 2
   x_crf: 18
   x_preset: slow
   x_tune: animation
@@ -73,7 +88,7 @@ decode:
   png_intermediate_codec: mjpeg
 frame_dedupe:
   enabled: false
-  threshold: 0.000005
+  threshold: 5.0e-06
   protect_scene_cuts: true
 streams:
   copy_audio: true

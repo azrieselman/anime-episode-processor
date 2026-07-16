@@ -57,8 +57,8 @@ class Job(BaseModel):
     probe: dict[str, Any] | None = None
     # Sparse per-job preset overrides. Deep-merged onto the loaded preset's
     # JSON dump before the pipeline context is built. None = no override
-    # (use the preset as-is). Stored only for the fields the JobConfigView
-    # exposes for editing -- everything else stays preset-controlled.
+    # (use the preset as-is). Intended for a small set of per-job knobs
+    # (e.g. CLI/frame-dedupe); everything else stays preset-controlled.
     preset_overrides: dict[str, Any] | None = None
 
     @property

@@ -73,7 +73,6 @@ hiddenimports = collect_submodules("aep.adapters") + [
     # GUI views — discovered via app_window.py imports, but listing them is
     # cheap insurance.
     "aep.gui.views.queue_view",
-    "aep.gui.views.job_config_view",
     "aep.gui.views.stream_inspector_view",
     "aep.gui.views.logs_view",
     "aep.gui.views.settings_view",

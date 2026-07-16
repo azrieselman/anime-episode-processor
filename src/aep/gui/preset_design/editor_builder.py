@@ -10,7 +10,7 @@ from typing import Any, get_args, get_origin
 import annotated_types as at
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
-from PySide6.QtCore import QSignalBlocker
+from PySide6.QtCore import Qt, QSignalBlocker
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -37,6 +37,7 @@ from aep.gui.preset_design.schema_reflect import (
     literal_choices,
     strip_optional,
 )
+from aep.gui.widgets.wheel_guard import disable_wheel_value_changes
 from aep.persist.presets import Preset, TargetResolution, encoder_rc_matches_when
 
 _CATEGORY_ORDER = [
@@ -393,10 +394,12 @@ def build_preset_editor(
     _append_target_resolution_rows(bindings, rows, trigger)
 
     tabs_parent = QWidget()
+    tabs_parent.setObjectName("presetEditorRoot")
     outer = QVBoxLayout(tabs_parent)
     outer.setContentsMargins(0, 0, 0, 0)
 
     tab_widget = QTabWidget()
+    tab_widget.setObjectName("presetEditorTabs")
 
     for cat in _CATEGORY_ORDER:
         cat_rows = [r for r in rows if r.category == cat]
@@ -414,6 +417,7 @@ def build_preset_editor(
         tab_widget.addTab(scroll, _CATEGORY_TITLE.get(cat, cat.title()))
 
     outer.addWidget(tab_widget)
+    disable_wheel_value_changes(tabs_parent)
 
     def refresh_dynamic_visibility() -> None:
         for fn in visibility_refreshers:
@@ -428,9 +432,13 @@ def _build_standard_tab(rows: list[FieldRow]) -> QScrollArea:
 
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+    scroll.setObjectName("presetEditorScroll")
     inner = QWidget()
+    inner.setObjectName("presetEditorInner")
     vl = QVBoxLayout(inner)
-    vl.setContentsMargins(8, 8, 8, 8)
+    vl.setContentsMargins(10, 10, 10, 10)
+    vl.setSpacing(10)
 
     simple_box = QGroupBox("Simple")
     sf = QFormLayout(simple_box)
@@ -440,8 +448,11 @@ def _build_standard_tab(rows: list[FieldRow]) -> QScrollArea:
 
     if advanced_rows:
         adv_toggle = QToolButton()
+        adv_toggle.setObjectName("advancedToggle")
         adv_toggle.setCheckable(True)
+        adv_toggle.setChecked(False)
         adv_toggle.setText("Show advanced")
+        adv_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         adv_wrap = QWidget()
         adv_v = QVBoxLayout(adv_wrap)
         adv_v.setContentsMargins(0, 0, 0, 0)
@@ -491,9 +502,13 @@ def _build_encoding_tab(
 
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+    scroll.setObjectName("presetEditorScroll")
     inner = QWidget()
+    inner.setObjectName("presetEditorInner")
     vl = QVBoxLayout(inner)
-    vl.setContentsMargins(8, 8, 8, 8)
+    vl.setContentsMargins(10, 10, 10, 10)
+    vl.setSpacing(10)
 
     visibility_rows: list[FieldRow] = []
     family_picker: EncoderNamePicker | None = None
@@ -535,8 +550,10 @@ def _build_encoding_tab(
 
         if advanced_rows:
             adv_toggle = QToolButton()
+            adv_toggle.setObjectName("advancedToggle")
             adv_toggle.setCheckable(True)
             adv_toggle.setText("Show advanced")
+            adv_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
             box_layout.addWidget(adv_toggle)
 
             adv_box = QGroupBox()
@@ -556,6 +573,7 @@ def _build_encoding_tab(
         if group_key == "selection":
             hint = QLabel(_hardware_hint_text())
             hint.setWordWrap(True)
+            hint.setObjectName("presetHint")
             box_layout.addWidget(hint)
 
         vl.addWidget(box)
