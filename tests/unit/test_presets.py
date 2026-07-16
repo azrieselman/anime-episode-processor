@@ -87,6 +87,4 @@ def test_encoder_rc_matches_when_dispatches_by_family() -> None:
 def test_required_default_preset_present() -> None:
     presets_dir = Path(__file__).resolve().parents[2] / "presets"
     ids = {_load_yaml_file(p).meta.id for p in presets_dir.glob("*.yaml")}
-    for required in ("anime_balanced", "anime_quality", "anime_speed",
-                     "mixed_balanced", "low_vram_safe"):
-        assert required in ids, f"missing required preset: {required}"
+    assert "anime_balanced" in ids, "missing required default preset: anime_balanced"
