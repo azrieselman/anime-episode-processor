@@ -15,13 +15,13 @@ and metadata.
 - Stage-based, resumable, deterministic pipeline (probe → plan → scene-detect → batched
   decode/upscale/interpolate/postprocess/encode → mux → validate).
 
-Current release: **1.0.0-beta3**. See [`CHANGELOG.md`](CHANGELOG.md) for what's in the
+Current release: **1.0.0-beta4**. See [`CHANGELOG.md`](CHANGELOG.md) for what's in the
 box and known limitations.
-The `main` branch tracks post-release development after **1.0.0-beta3**.
+The `main` branch tracks post-release development after **1.0.0-beta4**.
 
 ## Install (end users)
 
-Download the latest `AEP-Setup-1.0.0-beta3.exe` from the
+Download the latest `AEP-Setup-1.0.0-beta4.exe` from the
 [GitHub Releases](https://github.com/azrieselman/anime-episode-processor/releases) page and run
 it. The installer is small (~75 MB); on first launch the GUI offers to download and
 verify the pinned third-party binaries (FFmpeg, MKVToolNix, NCNN-Vulkan tools — about

@@ -9,6 +9,58 @@ the first publicly distributed build.
 
 ## [Unreleased]
 
+## [1.0.0-beta4] — 2026-07-15
+
+Fourth public beta. Broader GPU encoder support (QSV / AMF / D3D12 / Vulkan),
+FFmpeg full build 8.1.1, Benchmark and RamDisk GUI surfaces, tighter batch frame
+accounting, and a refreshed dark theme.
+
+### Added
+
+- **Hardware encoders**: Intel QSV, AMD AMF, and D3D12 / Vulkan encoder families
+  with parity-style preset fields and recommender coverage alongside NVENC / libx26x.
+- **Benchmark** sidebar view: segment-level pipeline runs with optional VMAF
+  (when `libvmaf` is present in the pinned FFmpeg build).
+- **RamDisk** sidebar view and ImDisk helpers for configuring / managing a
+  Windows RAM disk used by frame-heavy stages.
+- **Batch timing**: frame-plan utilities for overlap, trim, and expected-count
+  reconciliation across decode / interpolate batches (more reliable duration and
+  frame accounting when container metadata overstates length).
+- **FFProbe**: video packet timeline / `decodable_end_s` for accurate keyframe and
+  duration planning.
+- **RIFE robustness**: detect Vulkan `vkQueueSubmit failed` GPU faults and retry
+  interpolation up to three times.
+- **GUI**: dark theme refresh, wheel-guard for spinboxes, simplified sidebar
+  (Job Config removed; queue-centric layout).
+- **FFmpeg argv**: safer tokenization / auto-quoting for custom encoder args.
+
+### Changed
+
+- **FFmpeg pin**: gyan.dev **8.1.1 full** build (was essentials) for broader
+  hardware-encoder and filter coverage including VMAF where available.
+- **Default `anime_balanced`**: Anime4K ARTCNN 2x + RIFE v4.25; encoder fields
+  include NVENC / QSV / AMF / D3D12 / Vulkan knobs.
+- **Presets**: dropped unused built-ins (`anime_quality`, `anime_speed`,
+  `low_vram_safe`, `mixed_balanced`, `waifu2x_anime`); designer expanded for the
+  new encoder options.
+- **Preset designer / broker**: richer encoder configuration and concurrency /
+  job-lifecycle wiring improvements.
+
+### Removed
+
+- **Anime4KCPP-legacy (2.5.x)** adapter and related tests — Anime4KCPP 3.x is the
+  sole Anime4K path.
+
+### Known limitations
+
+- `02_sample_bench` pipeline-stage smart auto-tuning — post-beta (Benchmark tab
+  is a manual segment tool, not auto-preset selection).
+- `av1_nvenc` → `hevc_nvenc` automatic fallback on encode failure.
+- macOS / Linux ports.
+- Out-of-process worker broker (the service layer is already abstracted for
+  the eventual move; today everything runs in-process).
+- Code-signed Windows installer.
+
 ## [1.0.0-beta3] — 2026-05-16
 
 Third public beta. Anime4K-legacy upscaling, faster decode/scene-detect paths,
@@ -141,4 +193,5 @@ first-run tools fetcher.
 [1.0.0-beta1]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta1
 [1.0.0-beta2]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta2
 [1.0.0-beta3]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta3
-[Unreleased]: https://github.com/azrieselman/anime-episode-processor/compare/v1.0.0-beta3...HEAD
+[1.0.0-beta4]: https://github.com/azrieselman/anime-episode-processor/releases/tag/v1.0.0-beta4
+[Unreleased]: https://github.com/azrieselman/anime-episode-processor/compare/v1.0.0-beta4...HEAD

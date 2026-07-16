@@ -68,7 +68,7 @@ Output:
 
 * `dist\aep-gui\` — the one-folder bundle (run `aep-gui.exe` directly to
   verify it works without re-installing).
-* `dist\AEP-Setup-1.0.0-beta3.exe` — the Inno Setup installer.
+* `dist\AEP-Setup-1.0.0-beta4.exe` — the Inno Setup installer.
 
 ### Re-running just the installer step
 
